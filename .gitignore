@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.pytest_cache/
+data/outbox/
+_tmp/
+*.log
+
+# 工作区内部数据（非项目代码）
+.workbuddy/
+
+# 运行时生成的本地数据库
+data/*.db
+data/*.sqlite3
+
+# 原始需求文档（内部资料，不入库）
+_tmp/source.docx
+_tmp/source_full.txt

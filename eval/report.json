@@ -1,0 +1,60 @@
+{
+  "retrieval": {
+    "total": 200,
+    "hit_rate": {
+      "vector": 0.905,
+      "rrf": 0.94,
+      "rerank": 1.0,
+      "final": 1.0
+    },
+    "by_variant": {
+      "exact": {
+        "vector": 101,
+        "rrf": 103,
+        "rerank": 110,
+        "final": 110,
+        "total": 110
+      },
+      "paraphrase": {
+        "vector": 80,
+        "rrf": 85,
+        "rerank": 90,
+        "final": 90,
+        "total": 90
+      }
+    },
+    "baseline_vector": 0.905,
+    "final_pipeline": 1.0,
+    "improvement_pp": 9.5
+  },
+  "profile_recall": {
+    "total": 50,
+    "configs": {
+      "A1 只留最近 12 条原话": {
+        "grade": 1.0,
+        "strength": 0.0,
+        "cause": 1.0,
+        "overall": 0.6666666666666666
+      },
+      "A2 只留最近 12 轮原话": {
+        "grade": 1.0,
+        "strength": 1.0,
+        "cause": 1.0,
+        "overall": 1.0
+      },
+      "B1 12 条原话 + 侧写摘要": {
+        "grade": 1.0,
+        "strength": 1.0,
+        "cause": 1.0,
+        "overall": 1.0
+      },
+      "B2 12 轮原话 + 侧写摘要": {
+        "grade": 1.0,
+        "strength": 1.0,
+        "cause": 1.0,
+        "overall": 1.0
+      }
+    },
+    "improvement_12_messages_pp": 33.33333333333334
+  }
+}

@@ -1,0 +1,67 @@
+"""FastAPI 应用装配。"""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app import __version__
+from app.api import chat_router, health_router
+from app.config import get_settings
+from app.container import Container
+from app.logging_setup import setup_logging
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    setup_logging(settings.log_level)
+    logger.info(
+        "启动 %s v%s | model=%s/%s | memory=%s | risk_threshold=%.2f",
+        settings.app_name,
+        __version__,
+        settings.model_provider,
+        settings.model_name,
+        settings.memory_backend,
+        settings.risk_threshold,
+    )
+    app.state.container = Container(settings)
+    await app.state.container.setup_storage()
+    logger.info("容器就绪，开始接受请求")
+    yield
+    logger.info("服务已停止")
+
+
+def create_app() -> FastAPI:
+    """构建 FastAPI 实例。"""
+    settings = get_settings()
+    app = FastAPI(
+        title=settings.app_name,
+        version=__version__,
+        description=(
+            "中学积极心理陪伴智能体：4 WORKERS 编排 / 情绪轨迹 / "
+            "按需资源建议 / 高危固定上报流程"
+        ),
+        lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.include_router(health_router)
+    app.include_router(chat_router)
+    return app
+
+
+app = create_app()
+
+
+__all__ = ["app", "create_app"]

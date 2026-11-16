@@ -1,0 +1,76 @@
+{
+  "version": "1.0",
+  "description": "高危关键词词表。第一路判定：命中即 lexicon_hit=true，直接进入 Plan-execute 固定计划（简短安全回应 → escalate_risk → 通知老师/家长），不再自由挑选工具。",
+  "policy": "宁可误报勿漏报：阈值与词表都偏向高敏感度。",
+  "categories": [
+    {
+      "code": "self_harm_statement",
+      "category": "明确的自伤或自杀",
+      "severity": "critical",
+      "confidentiality_exception": true,
+      "note": "文档明确要求覆盖的保密例外之一。学生说出后不能继续按普通倾诉处理。",
+      "terms": [
+        "自杀", "想死", "不想活", "活不下去", "结束生命", "轻生", "跳楼",
+        "割腕", "服毒", "上吊", "吞药", "消失算了", "离开这个世界", "一了百了"
+      ],
+      "patterns": [
+        "我(?:真的|真的)?(?:很)?(?:想|要|准备|打算)?(?:去)?自杀",
+        "想(?:不)?开煤气",
+        "从(?:楼|桥|窗)(?:上|里)?跳(?:下去|楼)"
+      ]
+    },
+    {
+      "code": "harm_others",
+      "category": "明确的伤人",
+      "severity": "critical",
+      "confidentiality_exception": true,
+      "note": "文档明确要求覆盖的保密例外之二。",
+      "terms": [
+        "想打他", "想打她", "想揍", "想杀", "弄死", "砍他", "砍她", "拿刀",
+        "拿刀砍", "泼他", "泼她", "我要报仇", "杀了他", "杀了她"
+      ],
+      "patterns": [
+        "我想(?:杀|弄死|打死)(?:他|她|他们|她们)",
+        "(?:拿|用)刀(?:砍|捅|划)(?:他|她|他们)"
+      ]
+    },
+    {
+      "code": "minor_safety",
+      "category": "未成年人受侵害",
+      "severity": "critical",
+      "confidentiality_exception": true,
+      "note": "文档明确要求覆盖的保密例外之三。包含校内欺凌中的暴力与性侵害表述。",
+      "terms": [
+        "被虐待", "被侵犯", "被猥亵", "被强迫", "被威胁", "被欺负", "被霸凌",
+        "打我", "打我脸", "掐我", "他打我", "她打我", "老师打我", "爸爸打我", "妈妈打我", "家长打我",
+        "被关在", "被锁在", "不让走"
+      ],
+      "patterns": [
+        "(?:他|她|老师|同学|爸爸|妈妈|家长)(?:们)?(?:一直|老是|经常|总是)?(?:打我|打我脸|掐我)",
+        "被(?:强行|逼着|逼我)"
+      ]
+    }
+  ],
+  "suppress": [
+    {
+      "pattern": "我不想死",
+      "reason": "保护性表达：明确表示不想死，语义上与自杀意图相反",
+      "category": "self_harm_statement"
+    },
+    {
+      "pattern": "我不会(?:自杀|死)",
+      "reason": "保护性表达",
+      "category": "self_harm_statement"
+    },
+    {
+      "pattern": "(?:我|他|她)(?:不会|不能|不被允许)(?:自杀|自残)",
+      "reason": "保护性表达",
+      "category": "self_harm_statement"
+    },
+    {
+      "pattern": "电影|小说|游戏|动漫里.*(?:自杀|跳楼|自尽)",
+      "reason": "叙事语境而非自述",
+      "category": "self_harm_statement"
+    }
+  ]
+}
