@@ -10,6 +10,7 @@ import logging
 
 from agentscope.message import UserMsg
 
+from app.models.mock_model import mark_rule_usage
 from app.models.rule_engine import infer_needs
 from app.prompts import NEEDS_SYSTEM_PROMPT, build_user_message
 from app.schemas import EmotionCore, NeedResult, SessionContext
@@ -42,6 +43,7 @@ class NeedsWorker(BaseWorker):
             return NeedResult.model_validate(payload)
         except Exception as exc:  # noqa: BLE001
             logger.warning("需求澄清调用失败，回退到规则引擎：%s", exc)
+            mark_rule_usage()
             profile = ctx.profile
             profile_obj = None
             if profile is not None:

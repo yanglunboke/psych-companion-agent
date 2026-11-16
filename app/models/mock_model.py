@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import re
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, AsyncGenerator
 
 from agentscope.credential import CredentialBase
@@ -37,6 +39,23 @@ WORKER_MARKER_RE = re.compile(r"\[\[worker:([a-z_]+)\]\]")
 CTX_BLOCK_RE = re.compile(r"<<CTX>>\s*(\{.*?\})\s*<<END>>", re.S)
 
 STRUCTURED_TOOL_NAME = "GenerateStructuredOutput"
+
+
+@dataclass
+class RuleUsage:
+    """本轮是否实际调用过规则引擎；按异步请求上下文隔离。"""
+
+    used: bool = False
+
+
+rule_usage: ContextVar[RuleUsage | None] = ContextVar("rule_usage", default=None)
+
+
+def mark_rule_usage() -> None:
+    """记录本轮规则引擎参与过推断（含 Worker 内部的规则回退）。"""
+    usage = rule_usage.get()
+    if usage is not None:
+        usage.used = True
 
 
 class _LocalCredential(CredentialBase):
@@ -117,6 +136,7 @@ class RuleBasedChatModel(ChatModelBase):
         tool_choice: Any = None,
         **kwargs: Any,
     ) -> ChatResponse | AsyncGenerator[ChatResponse, None]:
+        mark_rule_usage()
         tool_names = [t.get("function", {}).get("name") for t in (tools or [])]
 
         if STRUCTURED_TOOL_NAME in tool_names:

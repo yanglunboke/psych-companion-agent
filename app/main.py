@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.api import chat_router, health_router
@@ -15,6 +18,7 @@ from app.container import Container
 from app.logging_setup import setup_logging
 
 logger = logging.getLogger(__name__)
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 @asynccontextmanager
@@ -58,6 +62,17 @@ def create_app() -> FastAPI:
     )
     app.include_router(health_router)
     app.include_router(chat_router)
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @app.get("/", include_in_schema=False)
+    async def home() -> FileResponse:
+        return FileResponse(STATIC_DIR / "index.html")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon() -> Response:
+        """兼容浏览器自动请求的 favicon 路径。"""
+        return Response(status_code=204)
+
     return app
 
 

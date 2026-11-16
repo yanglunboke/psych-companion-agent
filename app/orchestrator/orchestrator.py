@@ -25,6 +25,7 @@ from typing import Any, AsyncIterator
 
 from app.config import Settings
 from app.memory.profile import to_summary, update_profile
+from app.models.mock_model import RuleUsage, rule_usage
 from app.observability.reflection import ReflectionService
 from app.observability.trace import Trace, TraceStore
 from app.orchestrator.escalate import EscalationService
@@ -110,6 +111,15 @@ class Orchestrator:
 
     # ------------------------------------------------------------------
     async def handle(self, req: ChatRequest) -> AsyncIterator[ChatEvent]:
+        """按请求隔离规则引擎使用状态，流式迭代结束时清理。"""
+        token = rule_usage.set(RuleUsage())
+        try:
+            async for event in self._handle(req):
+                yield event
+        finally:
+            rule_usage.reset(token)
+
+    async def _handle(self, req: ChatRequest) -> AsyncIterator[ChatEvent]:
         """处理一轮对话，按事件流式返回。"""
         trace = Trace()
         self.trace_store.save(trace)
@@ -224,13 +234,16 @@ class Orchestrator:
                 yield event
 
         # ---------- 6. 落库 ----------
-        await self._persist(req, ctx, outcome)
+        # 任一 Worker 在本轮使用规则引擎（含真实模型中途降级）时，不写长期数据库。
+        # 短期上下文仍保留；高危上报在 _plan_execute 中已独立执行。
+        used_rule_engine = bool(rule_usage.get() and rule_usage.get().used)
+        await self._persist(req, ctx, outcome, persist_long_term=not used_rule_engine)
 
         outcome.tool_calls = list(trace.logs)
         outcome.total_ms = (time.perf_counter() - started) * 1000
 
-        # trace 落库：跨进程仍可按 trace_id 查回这一轮的调用顺序
-        if self.trace_sink is not None:
+        # trace 落库：规则引擎轮次也不写工具调用日志到 SQL。
+        if self.trace_sink is not None and not used_rule_engine:
             try:
                 await self.trace_sink.write(outcome.tool_calls)
             except Exception as exc:  # noqa: BLE001
@@ -532,8 +545,10 @@ class Orchestrator:
         req: ChatRequest,
         ctx: SessionContext,
         outcome: ChatOutcome,
+        *,
+        persist_long_term: bool = True,
     ) -> None:
-        """落库：短期记忆 + 情绪轨迹 + 心理侧写 + 对话原话。"""
+        """保留短期上下文；仅真实模型轮次写长期存储。"""
         now = time.time()
         await self.short_memory.append(
             req.session_id,
@@ -544,6 +559,9 @@ class Orchestrator:
                 req.session_id,
                 Turn(role="assistant", content=outcome.reply, ts=now, trace_id=outcome.trace_id),
             )
+
+        if not persist_long_term:
+            return
 
         if outcome.emotion is not None:
             await self.profile_store.append_emotion(

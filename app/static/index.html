@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f7f2">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23326f5e'/%3E%3Cpath d='M32 10c1 14 8 21 22 22-14 1-21 8-22 22-1-14-8-21-22-22 14-1 21-8 22-22Z' fill='white'/%3E%3C/svg%3E">
+  <title>心语 · 青少年成长陪伴</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <svg class="icon-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 2.5c.4 5.1 2.4 7.1 7.5 7.5-5.1.4-7.1 2.4-7.5 7.5-.4-5.1-2.4-7.1-7.5-7.5 5.1-.4 7.1-2.4 7.5-7.5Z"/><path d="M19.5 16.5c.1 1.8.8 2.5 2.5 2.6-1.7.1-2.4.8-2.5 2.5-.1-1.7-.8-2.4-2.5-2.5 1.7-.1 2.4-.8 2.5-2.6Z"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2 4.5 5v6c0 5 3 8.6 7.5 11 4.5-2.4 7.5-6 7.5-11V5L12 2Z"/><path d="m9 12 2 2 4-4"/></symbol><symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 8.5c0 4.2-6.6 9.1-8.8 10.7C9.8 17.6 3.2 12.7 3.2 8.5a4.7 4.7 0 0 1 8.8-2.2 4.7 4.7 0 0 1 8.8 2.2Z"/></symbol><symbol id="i-book" viewBox="0 0 24 24"><path d="M12 6c-3-2-6-2-9-1v13c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1Zm0 0v13"/></symbol><symbol id="i-close" viewBox="0 0 24 24"><path d="m5 5 14 14M19 5 5 19"/></symbol><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol></svg>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar" aria-label="侧边栏">
+      <div class="brand"><div class="brand-mark"><svg><use href="#i-spark"/></svg></div><div><strong>心语</strong><small>陪你慢慢长大</small></div></div>
+      <button class="new-chat" id="new-chat" type="button"><svg><use href="#i-plus"/></svg> 开始新对话</button>
+      <div class="side-label">在这里，你可以</div>
+      <div class="side-list"><div><svg><use href="#i-heart"/></svg><span>说说心里的事</span></div><div><svg><use href="#i-book"/></svg><span>试试轻量小练习</span></div><div><svg><use href="#i-shield"/></svg><span>了解求助方式</span></div></div>
+      <div class="sidebar-bottom"><span class="side-quote">“不用着急找到答案，<br>我们可以先从说出来开始。”</span><div class="side-separator"></div><p>这是一个辅助交流的工具，不替代老师、家长或专业帮助。紧急危险时，请立即联系身边可信任的成年人或当地紧急服务。</p></div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><button class="menu-btn" id="menu-btn" aria-label="打开菜单" aria-expanded="false" type="button"><svg><use href="#i-menu"/></svg></button><div class="top-title"><span>心语 · 成长陪伴</span><small>一个可以慢慢说的地方</small></div><div class="status-pill" id="model-status" title="当前模型状态"><span class="status-dot"></span><span id="model-status-text">正在连接</span></div></header>
+      <div class="conversation" id="conversation" role="log" aria-live="polite" aria-relevant="additions text"><div class="welcome" id="welcome"><div class="welcome-art" aria-hidden="true"><div class="art-ring art-ring-a"></div><div class="art-ring art-ring-b"></div><div class="art-center"><svg><use href="#i-spark"/></svg></div><div class="art-orbit orbit-one"></div><div class="art-orbit orbit-two"></div></div><div class="welcome-kicker"><span></span> 一个安全的表达空间</div><h1>嗨，今天过得<span>怎么样？</span></h1><p class="welcome-copy">开心的、烦恼的，或者说不清楚的心情，都可以从这里开始。你不需要把话组织得很完美。</p><div class="prompts" aria-label="开始对话的建议"><button class="prompt" data-prompt="最近学习压力有点大，想找个人聊聊" type="button"><span>学习压力有点大</span><svg><use href="#i-arrow"/></svg></button><button class="prompt" data-prompt="最近和朋友之间有点不愉快" type="button"><span>和朋友闹了别扭</span><svg><use href="#i-arrow"/></svg></button><button class="prompt" data-prompt="今天发生了一件让我开心的小事" type="button"><span>分享一件开心的小事</span><svg><use href="#i-arrow"/></svg></button></div></div><div class="messages" id="messages"></div></div>
+      <div class="compose-area"><div class="error-message" id="error-message" role="alert" hidden></div><div class="composer"><label for="message" class="sr-only">输入你想说的话</label><textarea id="message" rows="1" maxlength="4000" placeholder="想说什么，就从这里开始…" aria-describedby="input-tip"></textarea><div class="compose-row"><span id="input-tip">按 Enter 发送 · Shift + Enter 换行</span><button id="send" class="send-btn" type="button" aria-label="发送消息" disabled><svg><use href="#i-arrow"/></svg></button></div></div><p class="compose-disclaimer">聊天会由服务端处理和保存。请不要输入姓名、电话等敏感身份信息。遇到紧急危险，请直接向身边的大人或当地紧急服务求助。</p></div>
+    </main>
+    <aside class="info-rail" aria-label="使用说明"><div class="rail-kicker">ABOUT THIS SPACE</div><h2>每一种心情，<br>都值得被听见。</h2><p class="rail-lead">这里不会要求你立刻变好。我们先认真听，再一起看看能做什么。</p><div class="rail-divider"></div><div class="rail-point"><div class="rail-icon"><svg><use href="#i-heart"/></svg></div><div><strong>先倾听，再回应</strong><p>按你此刻的需要，选择陪伴、引导或练习。</p></div></div><div class="rail-point"><div class="rail-icon"><svg><use href="#i-book"/></svg></div><div><strong>适合时才建议练习</strong><p>不是每次谈话，都必须立刻解决问题。</p></div></div><div class="rail-point"><div class="rail-icon"><svg><use href="#i-shield"/></svg></div><div><strong>重要时刻，寻求帮助</strong><p>系统会尝试启动风险上报；是否送达请以页面提示为准。</p></div></div><div class="rail-note"><span class="rail-note-mark">?</span><p>如果正处于危险中，请不要等待系统回应，立即联系身边可信任的成年人或当地紧急服务。</p></div></aside>
+  </div>
+  <div class="mobile-scrim" id="mobile-scrim" hidden></div>
+</body>
+</html>

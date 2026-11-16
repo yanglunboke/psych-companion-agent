@@ -2,9 +2,9 @@
 
 > 4 WORKERS 编排 · 情绪轨迹 · 按需资源建议 · 高危固定上报流程
 
-基于 [AgentScope](https://github.com/agentscope-ai/agentscope) 2.x 实现的后端服务。
-一个编排器调度多个**职责固定**的 Worker；每轮走 ReAct（按需调用）还是
-Plan-execute（固定计划）**由代码决定**，而不是交给模型自由发挥。
+基于 [AgentScope](https://github.com/agentscope-ai/agentscope) 2.x 实现的陪伴系统，
+包含同源聊天前端与 FastAPI 后端。一个编排器调度多个**职责固定**的 Worker；
+每轮走 ReAct（按需调用）还是 Plan-execute（固定计划）**由代码决定**，而不是交给模型自由发挥。
 
 ---
 
@@ -78,6 +78,23 @@ cp .env.example .env      # 不改也能跑，默认走离线规则模型
 ./.venv/Scripts/python.exe run.py --reload   # 开发热重载
 ```
 
+Windows 的 cmd / PowerShell 用户，进入项目目录后用：
+
+```powershell
+.\.venv\Scripts\python.exe run.py
+```
+
+终端出现 `Uvicorn running on http://127.0.0.1:8000` 后保持该窗口打开，
+**在浏览器访问 [http://127.0.0.1:8000/](http://127.0.0.1:8000/)** 即可使用聊天页面；
+API 调试页在 `/docs`。启动服务会占用终端，属于正常现象；用 Ctrl+C 停止。
+浏览器不要用 `file://` 打开 `index.html`，页面需要同源 `/api/chat` 接口。
+
+页面提供流式对话、按需展示练习卡、风险上报状态、移动端布局。
+“开始新对话”会创建新的随机会话与学生标识，并清空**页面**消息；
+它**不会删除**服务端已经保存的原话、轨迹和侧写。页面不会在浏览器持久保存聊天记录；
+刷新后不能恢复历史消息。当前项目未实现用户认证，仅适合可信的本机开发环境；
+不要直接暴露到公网或用真实未成年人身份信息测试。
+
 ### 4. 验证
 
 ```bash
@@ -115,7 +132,7 @@ SSE 事件类型：`meta`（trace_id 等）→ `delta`（学生可见增量文�
 ```dotenv
 MODEL_PROVIDER=openai
 MODEL_NAME=MiniMax-M2.7             # 或 qwen-plus / deepseek-chat / gpt-4o-mini ...
-MODEL_BASE_URL=https://api.minimax.io/v1
+MODEL_BASE_URL=https://api.minimaxi.com/v1
 MODEL_API_KEY=sk-xxxxxxxx
 ```
 
@@ -141,6 +158,15 @@ MODEL_API_KEY=sk-xxxxxxxx
 > 降级后还会**熔断**（`MODEL_CIRCUIT_BREAKER=true`）：真实模型失败一次就不再重试，
 > 避免每轮白跑一个注定失败的请求、白白拖慢首字延迟。
 
+**数据库写入策略**：只要本轮任一 Worker 实际调用了本地规则引擎（包括直接设置
+`MODEL_PROVIDER=mock`、真实模型调用失败后自动降级，以及 Worker 内部规则回退），
+整轮就不会向长期 SQL 存储写入学生/助手原话、情绪轨迹、学生侧写或工具调用日志。
+只有整轮没有调用规则引擎时，才按原逻辑写入这些表。短期会话上下文仍会保留，
+规则轮次照常返回回复；高危上报是独立流程，仍会写入配置的 outbox 或发送 webhook，
+**并不受“不写数据库”策略限制**。进程内 trace 仍可在服务运行期间查询。
+这项改动仅作用于新对话，**不会清理旧数据库记录**。如启用了 Redis 短期记忆，
+短期上下文仍可能存放在 Redis 中；“不写数据库”不等于完全不留存。
+
 ---
 
 ## 三、目录结构
@@ -151,7 +177,8 @@ app/
 ├── schemas.py           领域模型与 API 契约（唯一口径来源）
 ├── container.py         依赖装配（配置 → 一整套可用组件）
 ├── logging_setup.py     日志
-├── main.py              FastAPI 装配
+├── main.py              FastAPI 装配与同源页面路由
+├── static/              前端页面（index.html / style.css / app.js）
 ├── models/              LLM 适配层
 │   ├── base.py          模型工厂（main / risk 双用途）
 │   ├── mock_model.py    离线规则模型（AgentScope ChatModelBase 实现）

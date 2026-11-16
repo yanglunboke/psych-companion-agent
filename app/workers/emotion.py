@@ -13,6 +13,7 @@ import logging
 
 from agentscope.message import UserMsg
 
+from app.models.mock_model import mark_rule_usage
 from app.models.rule_engine import infer_emotion
 from app.prompts import EMOTION_SYSTEM_PROMPT, RISK_SYSTEM_PROMPT, build_user_message
 from app.schemas import EmotionCore, RiskScore, SessionContext
@@ -48,6 +49,7 @@ class EmotionWorker(BaseWorker):
             return self._fallback(ctx)
 
     def _fallback(self, ctx: SessionContext) -> EmotionCore:
+        mark_rule_usage()
         result = infer_emotion(
             ctx.current_text,
             [t.content for t in ctx.recent_turns if t.role == "student"],
@@ -87,6 +89,7 @@ class RiskScorer(BaseWorker):
             return RiskScore.model_validate(payload)
         except Exception as exc:  # noqa: BLE001
             logger.warning("风险分调用失败，回退到规则引擎：%s", exc)
+            mark_rule_usage()
             result = infer_emotion(
                 ctx.current_text,
                 [t.content for t in ctx.recent_turns if t.role == "student"],
