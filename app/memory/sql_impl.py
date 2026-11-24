@@ -58,13 +58,18 @@ class StudentProfileRow(Base):
     grade: Mapped[str | None] = mapped_column(String(32), default=None)
     aspiration: Mapped[str | None] = mapped_column(String(128), default=None)
     strengths: Mapped[list] = mapped_column(JSON, default=list)
+    via_strengths: Mapped[dict] = mapped_column(JSON, default=dict)
     stable_distortions: Mapped[list] = mapped_column(JSON, default=list)
+    positive_cognitions: Mapped[list] = mapped_column(JSON, default=list)
+    attribution_style: Mapped[str] = mapped_column(String(32), default="")
     unmet_needs: Mapped[list] = mapped_column(JSON, default=list)
     risk_level: Mapped[str] = mapped_column(String(16), default="low")
     last_cause: Mapped[str | None] = mapped_column(String(255), default=None)
     last_emotion: Mapped[str | None] = mapped_column(String(32), default=None)
     intensity_ema: Mapped[float] = mapped_column(Float, default=0.0)
+    emotion_trend: Mapped[str] = mapped_column(String(16), default="平稳")
     evidence_counts: Mapped[dict] = mapped_column(JSON, default=dict)
+    positive_cognition_counts: Mapped[dict] = mapped_column(JSON, default=dict)
     updated_at: Mapped[float] = mapped_column(Float, default=0.0)
 
 
@@ -120,6 +125,33 @@ class SqlProfileStore:
     async def init_schema(self) -> None:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # SQLite 的 create_all 不会给已存在的表加新列；这里对心理侧写表
+            # 做一次轻量迁移，把后加的列补上（Postgres 生产库建议用 Alembic，
+            # 此处只为本地/测试的 SQLite 提供兜底，幂等，重复执行无副作用）。
+            await conn.run_sync(self._migrate_sqlite_columns)
+
+    @staticmethod
+    def _migrate_sqlite_columns(sync_conn) -> None:
+        """为 SQLite 的 student_profile 表补齐新增列（幂等）。"""
+        if sync_conn.dialect.name != "sqlite":
+            return
+        additions = [
+            ("via_strengths", "JSON", "'{}'"),
+            ("positive_cognitions", "JSON", "'[]'"),
+            ("attribution_style", "VARCHAR(32)", "''"),
+            ("emotion_trend", "VARCHAR(16)", "'平稳'"),
+            ("positive_cognition_counts", "JSON", "'{}'"),
+        ]
+        existing = {
+            row[1]
+            for row in sync_conn.exec_driver_sql("PRAGMA table_info(student_profile)")
+        }
+        for col, ctype, default in additions:
+            if col in existing:
+                continue
+            sync_conn.exec_driver_sql(
+                f'ALTER TABLE student_profile ADD COLUMN {col} {ctype} DEFAULT {default}'
+            )
 
     async def dispose(self) -> None:
         await self.engine.dispose()
@@ -135,13 +167,18 @@ class SqlProfileStore:
                 grade=row.grade,
                 aspiration=row.aspiration,
                 strengths=list(row.strengths or []),
+                via_strengths=dict(row.via_strengths or {}),
                 stable_distortions=list(row.stable_distortions or []),
+                positive_cognitions=list(row.positive_cognitions or []),
+                attribution_style=row.attribution_style or "",
                 unmet_needs=list(row.unmet_needs or []),
                 risk_level=row.risk_level,
                 last_cause=row.last_cause,
                 last_emotion=row.last_emotion,
                 intensity_ema=row.intensity_ema,
+                emotion_trend=row.emotion_trend or "平稳",
                 evidence_counts=dict(row.evidence_counts or {}),
+                positive_cognition_counts=dict(row.positive_cognition_counts or {}),
                 updated_at=row.updated_at,
             )
 
@@ -154,13 +191,18 @@ class SqlProfileStore:
             row.grade = profile.grade
             row.aspiration = profile.aspiration
             row.strengths = list(profile.strengths)
+            row.via_strengths = dict(profile.via_strengths)
             row.stable_distortions = list(profile.stable_distortions)
+            row.positive_cognitions = list(profile.positive_cognitions)
+            row.attribution_style = profile.attribution_style
             row.unmet_needs = list(profile.unmet_needs)
             row.risk_level = profile.risk_level
             row.last_cause = profile.last_cause
             row.last_emotion = profile.last_emotion
             row.intensity_ema = profile.intensity_ema
+            row.emotion_trend = profile.emotion_trend
             row.evidence_counts = dict(profile.evidence_counts)
+            row.positive_cognition_counts = dict(profile.positive_cognition_counts)
             row.updated_at = profile.updated_at
             await session.commit()
 

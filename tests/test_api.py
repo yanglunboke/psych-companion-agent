@@ -97,7 +97,12 @@ def test_real_model_sql_persistence_and_midturn_fallback(
             calls["n"] += 1
             if calls["n"] == fail_on:
                 raise RuntimeError("test model failure")
-            if tools:
+            # 只有真的要做结构化输出时才发 GenerateStructuredOutput。
+            # 引导轮也会带工具（search_strategy / suggest_exercise），
+            # 若这里不区分，会给引导轮也发一个结构化工具调用，
+            # Agent 就会一直空转直到超出迭代上限，产不出任何正文。
+            tool_names = {t.get("function", {}).get("name") for t in (tools or [])}
+            if "GenerateStructuredOutput" in tool_names:
                 payload = fake._structured_payload(messages, tools)
                 return ChatResponse(
                     content=[ToolCallBlock(

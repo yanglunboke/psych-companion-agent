@@ -37,6 +37,73 @@ _GRADE_PATTERNS = (
     re.compile(r"(高[一二三]|初[一二三]|中[一二三])(年级)?"),
 )
 
+# ---------------------------------------------------------------------------
+# 三维度：积极认知资源 + VIA 品格优势 + 情绪趋势
+# ---------------------------------------------------------------------------
+
+#: 积极认知资源线索 → 归一化标签（成长型思维 / 积极归因 / 自我接纳）
+_POSITIVE_COGNITION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("成长型思维", re.compile(r"(我会?努力|还能进步|慢慢来|只要.*就能|坚持.*就|练习.*就能|多练)")),
+    ("积极归因", re.compile(r"(这次没考好|这次没做好).{0,6}(没关系|正常|不代表|还能|下次)|不是我(不行|笨).*(而是|是)")),
+    ("自我接纳", re.compile(r"(接受?自己|接纳自己|我就是我|也挺好|没关系|别太苛责|放过自己)")),
+)
+
+#: VIA 品格优势关键词 → 优势名
+_VIA_STRENGTH_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("韧性", ("坚持", "不放弃", "挺过来", "扛住", "熬过去", "没被打倒", "爬起来")),
+    ("创造力", ("创意", "点子", "想出新", "原创", "想象力", "灵感")),
+    ("同理心", ("理解别人", "体谅", "替别人想", "感同身受", "能理解")),
+    ("勇敢", ("鼓起勇气", "敢", "不怕", "站出来", "豁出去")),
+    ("感恩", ("感谢", "谢谢", "感激", "感恩", "珍惜")),
+    ("好奇心", ("好奇", "想知道", "探索", "钻研", "感兴趣")),
+    ("自律", ("坚持早起", "按计划", "管住自己", "自律", "打卡")),
+    ("善良", ("帮助", "帮别人", "照顾", "安慰", "陪")),
+)
+
+
+def extract_positive_cognitions(text: str) -> list[str]:
+    """从学生原话里提取积极认知资源（成长型思维 / 积极归因 / 自我接纳）。"""
+    found: list[str] = []
+    for label, pattern in _POSITIVE_COGNITION_PATTERNS:
+        if pattern.search(text) and label not in found:
+            found.append(label)
+    return found
+
+
+def extract_via_strengths(text: str) -> list[str]:
+    """按 VIA 品格优势关键词识别优势（比"我擅长"正则覆盖面更广）。"""
+    found: list[str] = []
+    for name, keywords in _VIA_STRENGTH_KEYWORDS:
+        if any(kw in text for kw in keywords) and name not in found:
+            found.append(name)
+    return found
+
+
+def detect_emotion_trend(previous_ema: float, current_ema: float, delta: float = 0.15) -> str:
+    """由前后两次强度平滑值判断情绪趋势。
+
+    当前值显著高于前值 → 上升；显著低于 → 下降；否则平稳。
+    """
+    if current_ema - previous_ema > delta:
+        return "上升"
+    if previous_ema - current_ema > delta:
+        return "下降"
+    return "平稳"
+
+
+def infer_attribution_style(positive_counts: dict[str, int], stable_distortions: list[str]) -> str:
+    """由积极归因证据与稳定认知偏差推断归因风格。
+
+    积极归因证据占优 → 积极归因；稳定偏差占优 → 消极归因；否则尚未明确。
+    """
+    positive = positive_counts.get("积极归因", 0)
+    negative = len(stable_distortions)
+    if positive >= 3 and positive > negative:
+        return "积极归因"
+    if negative >= 3 and negative >= positive:
+        return "消极归因"
+    return "尚未明确"
+
 
 def extract_strengths(text: str) -> list[str]:
     """从学生原话里抽取"我擅长/优点是"这类自述优势。"""
@@ -87,6 +154,13 @@ def update_profile(
         if count >= evidence_threshold and distortion not in updated.stable_distortions:
             updated.stable_distortions.append(distortion)
 
+    # 2b) 积极认知资源：同样走 3 次交叉验证（认知维度的积极面）
+    for cognition in extract_positive_cognitions(student_text):
+        count = updated.positive_cognition_counts.get(cognition, 0) + 1
+        updated.positive_cognition_counts[cognition] = count
+        if count >= evidence_threshold and cognition not in updated.positive_cognitions:
+            updated.positive_cognitions.append(cognition)
+
     # 3) 未被满足的需求
     if needs:
         for need in needs.needs:
@@ -102,11 +176,28 @@ def update_profile(
         updated.last_cause = emotion.cause_detail or emotion.cause_domain.value
         updated.last_emotion = emotion.emotion_type
 
-    # 5) 优势 Top3
+    # 5) 优势 Top3 + VIA 品格优势（优势聚焦原则：每轮都找优势）
     for strength in extract_strengths(student_text):
         if strength not in updated.strengths:
             updated.strengths.append(strength)
+    for via in extract_via_strengths(student_text):
+        updated.via_strengths[via] = updated.via_strengths.get(via, 0) + 1
+    # VIA 优势按证据次数补进 strengths，保持 Top3
+    ranked_via = sorted(updated.via_strengths.items(), key=lambda kv: kv[1], reverse=True)
+    for via, _count in ranked_via:
+        if via not in updated.strengths:
+            updated.strengths.append(via)
     updated.strengths = updated.strengths[:3]
+
+    # 5b) 情绪趋势：比较平滑前后的强度
+    updated.emotion_trend = detect_emotion_trend(
+        profile.intensity_ema, updated.intensity_ema
+    )
+
+    # 5c) 归因风格 / 认知模式
+    updated.attribution_style = infer_attribution_style(
+        updated.positive_cognition_counts, updated.stable_distortions
+    )
 
     # 6) 年级
     grade = extract_grade(student_text)
@@ -133,15 +224,22 @@ def to_summary(profile: StudentProfile) -> ProfileSummary:
         aspiration=profile.aspiration,
         strengths=list(profile.strengths),
         stable_distortions=list(profile.stable_distortions),
+        positive_cognitions=list(profile.positive_cognitions),
+        attribution_style=profile.attribution_style,
         unmet_needs=list(profile.unmet_needs),
         risk_level=profile.risk_level,
         last_cause=profile.last_cause,
+        emotion_trend=profile.emotion_trend,
     )
 
 
 __all__ = [
+    "detect_emotion_trend",
     "extract_grade",
+    "extract_positive_cognitions",
     "extract_strengths",
+    "extract_via_strengths",
+    "infer_attribution_style",
     "smooth_intensity",
     "to_summary",
     "update_profile",

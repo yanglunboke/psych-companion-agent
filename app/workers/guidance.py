@@ -10,6 +10,16 @@
 Worker 的工具箱里挂了两个真实可调用的工具（``search_strategy`` /
 ``suggest_exercise``），方便接真模型时让它按需 ReAct 取卡；离线规则模型
 不会调用它们，卡片由编排器提前检索好直接注入。
+
+**学生可见内容的边界在这里划定。** AgentScope 的流式事件里除了正文增量
+（``TextBlockDeltaEvent``），还有两类绝不能给学生看的东西：
+
+* ``ToolCallDeltaEvent`` —— 工具调用的原始参数 JSON；
+* 内联在正文里的推理内容（部分服务不返回 ``reasoning_content``，而是把
+  ``<think>...</think>`` 直接塞进 ``content``）。
+
+所以这里只转发正文增量，并在转发前用 :class:`~app.models.sanitize.ThinkFilter`
+剥掉推理块。
 """
 
 from __future__ import annotations
@@ -17,10 +27,13 @@ from __future__ import annotations
 import logging
 from typing import AsyncIterator, Sequence
 
+from agentscope.event import TextBlockDeltaEvent
 from agentscope.message import TextBlock, UserMsg
+from agentscope.permission import PermissionBehavior, PermissionDecision
 from agentscope.tool import FunctionTool, Toolkit, ToolResponse
 from pydantic import BaseModel, Field
 
+from app.models.sanitize import ThinkFilter, strip_think
 from app.prompts import GUIDANCE_SYSTEM_PROMPT, SAFETY_SYSTEM_PROMPT, build_user_message
 from app.schemas import EmotionCore, NeedResult, RetrievedCard, SessionContext
 from app.workers.base import BaseWorker
@@ -99,6 +112,14 @@ class GuidanceWorker(BaseWorker):
                 name="search_strategy",
                 description="按场景检索学生回复策略卡与禁止说法卡",
                 input_schema=SearchStrategyInput,
+                # AgentScope 的 FunctionTool 默认要求用户确认（ASK）。本系统
+                # 没有交互式确认通道，不显式放行的话工具永远不会被执行——
+                # 模型发起调用后会直接结束这一轮，学生拿不到任何回复。
+                # 这两个工具都是只读检索，无副作用，可以直接放行。
+                permission=PermissionDecision(
+                    behavior=PermissionBehavior.ALLOW,
+                    message="只读检索，无副作用，自动放行",
+                ),
             )
         )
         await toolkit.add_tool(
@@ -107,6 +128,10 @@ class GuidanceWorker(BaseWorker):
                 name="suggest_exercise",
                 description="当学生需要可操作的方法时，取一张练习卡",
                 input_schema=SuggestExerciseInput,
+                permission=PermissionDecision(
+                    behavior=PermissionBehavior.ALLOW,
+                    message="只读检索，无副作用，自动放行",
+                ),
             )
         )
         return toolkit
@@ -134,10 +159,32 @@ class GuidanceWorker(BaseWorker):
             reflection_hint=reflection_hint,
         )
         agent = self.build_agent(GUIDANCE_SYSTEM_PROMPT, toolkit=await self.build_toolkit())
+        think_filter = ThinkFilter()
+        started = False
         async for evt in agent.reply_stream(UserMsg(name="student", content=content)):
-            delta = getattr(evt, "delta", None)
-            if isinstance(delta, str) and delta:
-                yield delta
+            # 只转发正文增量：工具调用参数（ToolCallDeltaEvent）与独立推理块
+            # （ThinkingBlockDeltaEvent）都不是学生可见内容。
+            if not isinstance(evt, TextBlockDeltaEvent):
+                continue
+            delta = evt.delta
+            if not delta:
+                continue
+            clean = think_filter.feed(delta)
+            if not started:
+                # 模型在推理块之后通常会留一个空行，剥掉推理后就成了开头的
+                # 空行。回复不该以空白开头——在 Worker 这里去掉，保证增量流、
+                # 同步接口的拼接结果与落库文本三者完全一致。
+                clean = clean.lstrip()
+                if not clean:
+                    continue
+                started = True
+            if clean:
+                yield clean
+        tail = think_filter.flush()
+        if not started:
+            tail = tail.lstrip()
+        if tail:
+            yield tail
 
     async def safety_reply(self, ctx: SessionContext, emotion: EmotionCore | None = None) -> str:
         """高危轮的简短安全回应。"""
@@ -152,8 +199,14 @@ class GuidanceWorker(BaseWorker):
         parts: list[str] = []
         for block in msg.content or []:
             text = getattr(block, "text", None)
-            if text:
-                parts.append(str(text))
+            if not text:
+                continue
+            # 高危轮的草稿会被反思闸门逐字检查，推理内容必须先剥掉——
+            # 否则模型英文独白里的问号会被判成"问了不止一个问题"，
+            # 整个安全回应（含热线号码）会被拦下不发给学生。
+            cleaned = strip_think(str(text)).strip()
+            if cleaned:
+                parts.append(cleaned)
         return "\n".join(parts).strip()
 
 

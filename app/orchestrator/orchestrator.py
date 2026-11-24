@@ -26,6 +26,7 @@ from typing import Any, AsyncIterator
 from app.config import Settings
 from app.memory.profile import to_summary, update_profile
 from app.models.mock_model import RuleUsage, rule_usage
+from app.models.sanitize import strip_think
 from app.observability.reflection import ReflectionService
 from app.observability.trace import Trace, TraceStore
 from app.orchestrator.escalate import EscalationService
@@ -345,6 +346,10 @@ class Orchestrator:
             chunks.append(delta)
             yield ChatEvent("delta", {"text": delta})
         reply = "".join(chunks)
+        # 兜底：Worker 已经剥过推理内容，这里再洗一次，保证落库的"助手原话"
+        # 与发给学生的文本里都不会混进模型的内心独白。
+        # lstrip：推理块之后模型往往会留一个空行，剥掉后就成了开头的空行。
+        reply = strip_think(reply).lstrip()
         trace.record(
             "positive_guidance",
             key_args={"chars": len(reply), "cards": len(retrieval.selected)},
@@ -422,6 +427,8 @@ class Orchestrator:
         # 第一步：简短的安全回应
         t0 = time.perf_counter()
         draft = await self.guidance_worker.safety_reply(ctx, outcome.emotion)
+        # 兜底：安全回应是危机时刻唯一发给学生的内容，再洗一次推理内容。
+        draft = strip_think(draft).lstrip()
         trace.record(
             "safety_reply",
             key_args={"chars": len(draft)},

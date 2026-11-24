@@ -261,15 +261,37 @@ class EmotionTrajectoryItem(BaseModel):
 
 
 class StudentProfile(BaseModel):
-    """心理侧写（Postgres，跨轮稳定结论）。"""
+    """心理侧写（Postgres，跨轮稳定结论）。
+
+    三个维度（情绪 / 认知 / 需求与优势）：
+
+    * **情绪**：``intensity_ema``（强度平滑）、``emotion_trend``（趋势）、
+      ``last_cause`` / ``last_emotion``（上一次诱因与情绪）。
+    * **认知**：``stable_distortions``（不合理认知，3 次验证）、
+      ``positive_cognitions``（积极认知资源，3 次验证）、
+      ``attribution_style``（归因风格 / 认知模式）。
+    * **需求与优势**：``unmet_needs``、``strengths``（VIA 品格优势）。
+    """
 
     student_id: str
     grade: str | None = None
     aspiration: str | None = None
-    strengths: list[str] = Field(default_factory=list, description="优势 Top3")
+    strengths: list[str] = Field(default_factory=list, description="VIA 品格优势 Top3")
+    via_strengths: dict[str, int] = Field(
+        default_factory=dict,
+        description="VIA 品格优势 → 证据计数（从学生原话提取）",
+    )
     stable_distortions: list[str] = Field(
         default_factory=list,
         description="已三次验证过的认知偏差",
+    )
+    positive_cognitions: list[str] = Field(
+        default_factory=list,
+        description="已三次验证过的积极认知资源（成长型思维/积极归因/自我接纳）",
+    )
+    attribution_style: str = Field(
+        default="",
+        description="归因风格 / 认知模式总结（积极归因 / 消极归因 / 尚未明确）",
     )
     unmet_needs: list[str] = Field(default_factory=list, description="没被满足的需求")
     risk_level: str = "low"
@@ -279,7 +301,15 @@ class StudentProfile(BaseModel):
         default=0.0,
         description="情绪强度的指数平滑值：0.7*旧值 + 0.3*本轮",
     )
+    emotion_trend: str = Field(
+        default="平稳",
+        description="情绪变化趋势：上升 / 下降 / 平稳（连续对话跟踪）",
+    )
     evidence_counts: dict[str, int] = Field(default_factory=dict)
+    positive_cognition_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="积极认知资源 → 证据计数",
+    )
     updated_at: float = 0.0
 
 
@@ -291,9 +321,12 @@ class ProfileSummary(BaseModel):
     aspiration: str | None = None
     strengths: list[str] = Field(default_factory=list)
     stable_distortions: list[str] = Field(default_factory=list)
+    positive_cognitions: list[str] = Field(default_factory=list)
+    attribution_style: str = ""
     unmet_needs: list[str] = Field(default_factory=list)
     risk_level: str = "low"
     last_cause: str | None = None
+    emotion_trend: str = "平稳"
 
     def to_prompt_text(self) -> str:
         if not any(
@@ -302,6 +335,7 @@ class ProfileSummary(BaseModel):
                 self.aspiration,
                 self.strengths,
                 self.stable_distortions,
+                self.positive_cognitions,
                 self.unmet_needs,
                 self.last_cause,
             ],
@@ -316,10 +350,16 @@ class ProfileSummary(BaseModel):
             lines.append(f"- 优势：{'、'.join(self.strengths)}")
         if self.stable_distortions:
             lines.append(f"- 稳定认知偏差：{'、'.join(self.stable_distortions)}")
+        if self.positive_cognitions:
+            lines.append(f"- 积极认知资源：{'、'.join(self.positive_cognitions)}")
+        if self.attribution_style:
+            lines.append(f"- 归因风格：{self.attribution_style}")
         if self.unmet_needs:
             lines.append(f"- 未被满足的需求：{'、'.join(self.unmet_needs)}")
         if self.last_cause:
             lines.append(f"- 上一次情绪诱因：{self.last_cause}")
+        if self.emotion_trend and self.emotion_trend != "平稳":
+            lines.append(f"- 情绪趋势：{self.emotion_trend}")
         lines.append(f"- 风险等级：{self.risk_level}")
         return "\n".join(lines)
 
