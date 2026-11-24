@@ -36,6 +36,7 @@ async def lifespan(app: FastAPI):
     )
     app.state.container = Container(settings)
     await app.state.container.setup_storage()
+    await app.state.container.setup_vector_store()
     logger.info("容器就绪，开始接受请求")
     yield
     logger.info("服务已停止")

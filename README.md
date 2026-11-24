@@ -104,6 +104,50 @@ curl http://127.0.0.1:8000/api/meta
 ./.venv/Scripts/python.exe -m pytest -q
 ```
 
+### 4.1 语义向量检索（可选，PGVector + bge-m3）
+
+默认 `EMBEDDING_BACKEND=hashing` + `VECTOR_BACKEND=memory`，用本地哈希向量 +
+进程内索引把「向量召回」这一路跑通（**无语义**，与 BM25 高度重合）。要升级为
+真实语义向量库，需要三步：
+
+**① 起 Postgres + pgvector**（需已安装 Docker）：
+
+```bash
+docker compose up -d   # 暴露在 localhost:5433
+```
+
+**② 装语义向量依赖**：
+
+```bash
+./.venv/Scripts/python.exe -m pip install pgvector sentence-transformers
+```
+
+**③ 下载 bge-m3 权重**（约 2.3GB，二选一）：
+
+```bash
+# 方式 A：ModelScope（国内推荐，需 pip install modelscope）
+./.venv/Scripts/python.exe -c "from modelscope import snapshot_download; print(snapshot_download('BAAI/bge-m3'))"
+#   → C:\Users\<你>\.cache\modelscope\models\BAAI--bge-m3\snapshots\master
+
+# 方式 B：HuggingFace 镜像
+#   set HF_ENDPOINT=https://hf-mirror.com
+```
+
+**④ 改 `.env`**（`EMBEDDING_MODEL` 指向第③步下载的本地路径即可，无需再联网）：
+
+```dotenv
+EMBEDDING_BACKEND=bge
+EMBEDDING_MODEL=C:/Users/<你>/.cache/modelscope/models/BAAI--bge-m3/snapshots/master
+VECTOR_BACKEND=pgvector
+PG_DSN=postgresql+psycopg://psych:psych@localhost:5433/psych
+```
+
+启动后访问 `/api/meta`，`runtime.vector` 会如实显示 `embedder=bge-m3`、
+`store=pgvector`；连不上 PGVector 时自动降级回进程内哈希索引（服务照常能跑）。
+
+> **Windows 提示**：`run.py` 已在 Windows 下强制使用 `SelectorEventLoop`
+> （psycopg3 异步驱动不兼容默认的 `ProactorEventLoop`），无需手动干预。
+
 ### 5. 对话接口
 
 ```bash
@@ -246,6 +290,11 @@ tests/                   单元测试
 | `SQL_DSN` | `sqlite+aiosqlite:///./data/psych_companion.db` | 生产改成 `postgresql+psycopg://…` |
 | `POSTGRES_DSN` | 空 | 填了就优先用它（覆盖 `SQL_DSN`） |
 | `STORAGE_FALLBACK` | `true` | 后端连不上时是否降级到进程内 |
+| `EMBEDDING_BACKEND` | `hashing` | `hashing`（本地哈希，离线默认）/ `bge`（真实语义模型） |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | 语义向量模型（`EMBEDDING_BACKEND=bge` 时生效） |
+| `VECTOR_BACKEND` | `memory` | `memory`（进程内）/ `pgvector`（Postgres + pgvector 持久化） |
+| `PG_DSN` | 空 | PGVector 连接串（`VECTOR_BACKEND=pgvector` 时生效） |
+| `EMBEDDING_DIM` | `1024` | 向量维度（bge-m3 = 1024） |
 | `MODEL_FALLBACK_TO_MOCK` | `true` | 模型不可用时是否降级到本地规则引擎 |
 | `MODEL_CIRCUIT_BREAKER` | `true` | 真实模型失败后是否熔断（不再每轮重试） |
 | `SHORT_TERM_TURNS` | `12` | 短期记忆窗口（最近 12 轮） |

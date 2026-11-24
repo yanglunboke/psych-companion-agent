@@ -23,6 +23,7 @@ from app.orchestrator.orchestrator import Orchestrator
 from app.orchestrator.router import ToolRouter
 from app.orchestrator.safety import Lexicon, SafetyGate
 from app.rag.index import build_default_index
+from app.rag.embedding import build_embedder
 from app.rag.retriever import Retriever, RetrieverConfig
 from app.workers.emotion import EmotionWorker, RiskScorer
 from app.workers.exercise import ExerciseWorker
@@ -45,7 +46,14 @@ class Container:
         risk_model = self.model_factory.create("risk")
 
         # ---- 知识库与检索 ----
-        self.card_index = build_default_index(s.data_dir)
+        self.embedder = build_embedder(s.embedding_backend, s.embedding_model)
+        self.card_index = build_default_index(s.data_dir, embedder=self.embedder)
+        self.vector_store: Any = None
+        self.vector_status: dict[str, Any] = {
+            "embedder": self.embedder.name,
+            "store": "memory",
+            "detail": "进程内向量索引",
+        }
         self.retriever = Retriever(
             self.card_index,
             RetrieverConfig(
@@ -136,12 +144,46 @@ class Container:
             profile_status.get("backend"),
         )
 
+    async def setup_vector_store(self) -> None:
+        """按配置装配 PGVector（连不上则保持内存索引）。"""
+        s = self.settings
+        if s.vector_backend != "pgvector" or not s.pg_dsn:
+            return
+        try:
+            from app.rag.pgvector_store import PgVectorStore
+
+            store = PgVectorStore(s.pg_dsn, dim=s.embedding_dim)
+            await store.init_schema()
+            # 把当前内存索引里的卡片向量灌进 PGVector（幂等 upsert）
+            items = [
+                (c.card_id, c.collection, c.vector)
+                for c in self.card_index.cards
+                if c.vector is not None
+            ]
+            await store.upsert_many(items)
+            self.vector_store = store
+            self.vector_status = {
+                "embedder": self.embedder.name,
+                "store": "pgvector",
+                "detail": s.pg_dsn,
+                "dim": s.embedding_dim,
+            }
+            logger.info("PGVector 就绪：写入 %d 条卡片向量", len(items))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("PGVector 不可用（%s），向量检索保持进程内索引", exc)
+            self.vector_status = {
+                "embedder": self.embedder.name,
+                "store": "memory",
+                "detail": f"PGVector 不可用，已降级：{exc}",
+            }
+
     # ------------------------------------------------------------------
     def status(self) -> dict[str, Any]:
         """运行状态（供 /health 如实暴露）。"""
         return {
             "model": self.model_factory.status(),
             "storage": self.storage_status,
+            "vector": self.vector_status,
             "cards": len(self.card_index.cards),
             "collections": self.card_index.collections(),
         }

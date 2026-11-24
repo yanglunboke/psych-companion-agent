@@ -75,6 +75,17 @@ class Settings(BaseSettings):
     profile_evidence_threshold: int = 3
 
     # ---------------- RAG 检索 ----------------
+    #: 向量化后端：hashing（本地哈希，无语义，离线默认）/ bge（真实语义模型）
+    embedding_backend: Literal["hashing", "bge"] = "hashing"
+    #: 语义向量模型（embedding_backend=bge 时生效）
+    embedding_model: str = "BAAI/bge-m3"
+    #: 向量持久化：memory（进程内，默认）/ pgvector（Postgres + pgvector）
+    vector_backend: Literal["memory", "pgvector"] = "memory"
+    #: PGVector 连接串（vector_backend=pgvector 时生效）
+    #: 形如 postgresql+psycopg://user:pw@host:5432/psych
+    pg_dsn: str = ""
+    #: 向量维度（bge-m3 = 1024）
+    embedding_dim: int = 1024
     recall_top_k: int = 20
     vector_min_score: float = 0.35
     rrf_k: int = 60

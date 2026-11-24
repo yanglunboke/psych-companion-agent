@@ -15,6 +15,10 @@ if str(ROOT) not in sys.path:
 # 测试必须离线且确定：强制走本地规则模型。
 # 环境变量优先级高于 .env，所以这一行会覆盖 .env 里的 MODEL_PROVIDER。
 os.environ["MODEL_PROVIDER"] = "mock"
+# 测试同样强制离线：向量化走本地哈希（避免加载 bge-m3 / 依赖 PGVector），
+# 保证无网络、无模型权重、无 Docker 也能秒级通过。向量存储固定内存。
+os.environ["EMBEDDING_BACKEND"] = "hashing"
+os.environ["VECTOR_BACKEND"] = "memory"
 
 from app.config import Settings, reload_settings  # noqa: E402
 
