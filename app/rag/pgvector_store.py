@@ -32,6 +32,11 @@ _IVFFLAT_INDEX = (
     "CREATE INDEX IF NOT EXISTS ix_card_vectors_ivfflat "
     "ON card_vectors USING ivfflat (embedding vector_cosine_ops) WITH (lists = 16)"
 )
+#: 内容指纹列（幂等补列）。卡片正文/检索文本改了，向量必须失效重编，
+#: 否则库里存的是"旧文本的向量"，与当前语义完全错位。
+_CONTENT_HASH_COLUMN = (
+    "ALTER TABLE card_vectors ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)"
+)
 
 
 class PgVectorStore:
@@ -73,6 +78,8 @@ class PgVectorStore:
             card_id: Any = Column(String(128), primary_key=True)
             collection: Any = Column(String(32), index=True)
             embedding: Any = Column(Vector(self.dim))
+            #: 检索文本的内容指纹，用于判断向量是否过期
+            content_hash: Any = Column(String(64), default="")
 
         self._Base = Base
         self._Row = CardVectorRow
@@ -92,13 +99,15 @@ class PgVectorStore:
                 await conn.exec_driver_sql(_ENABLE_EXTENSION)
             await conn.run_sync(self._Base.metadata.create_all)
             if conn.dialect.name == "postgresql":
+                # 老表补列（幂等）
+                await conn.exec_driver_sql(_CONTENT_HASH_COLUMN)
                 await conn.exec_driver_sql(_IVFFLAT_INDEX)
 
-    async def upsert_many(self, items: list[tuple[str, str, np.ndarray]]) -> None:
-        """批量写入 ``(card_id, collection, embedding)``。
+    async def upsert_many(self, items: list[tuple[str, str, np.ndarray, str]]) -> None:
+        """批量写入 ``(card_id, collection, embedding, content_hash)``。
 
         用 Postgres 的 ``INSERT ... ON CONFLICT DO UPDATE`` 做 upsert，
-        重复写入同一 card_id 时覆盖向量。
+        重复写入同一 card_id 时覆盖向量与内容指纹。
         """
         if not items:
             return
@@ -110,8 +119,9 @@ class PgVectorStore:
                 "card_id": card_id,
                 "collection": collection,
                 "embedding": np.asarray(vec, dtype=np.float32).tolist(),
+                "content_hash": content_hash,
             }
-            for card_id, collection, vec in items
+            for card_id, collection, vec, content_hash in items
         ]
         async with sessionmaker() as session:
             stmt = pg_insert(self._Row).values(rows)
@@ -120,6 +130,7 @@ class PgVectorStore:
                 set_={
                     "collection": stmt.excluded.collection,
                     "embedding": stmt.excluded.embedding,
+                    "content_hash": stmt.excluded.content_hash,
                 },
             )
             await session.execute(stmt)
@@ -158,11 +169,11 @@ class PgVectorStore:
                 (row.card_id, row.collection, float(row.sim)) for row in result.all()
             ]
 
-    async def fetch_all(self) -> list[tuple[str, str, np.ndarray]]:
-        """读出库里全部向量。
+    async def fetch_all(self) -> list[tuple[str, str, np.ndarray, str]]:
+        """读出库里全部向量与内容指纹。
 
         供启动时装载：把已持久化的向量灌回内存索引，省掉重新编码
-        （bge-m3 编码几十张卡要几十秒）。
+        （bge-m3 编码几十张卡要几十秒）。内容指纹用于判断向量是否过期。
         """
         _, sessionmaker = self._build_engine()
         from sqlalchemy import select  # noqa: PLC0415
@@ -172,10 +183,16 @@ class PgVectorStore:
                 self._Row.card_id,
                 self._Row.collection,
                 self._Row.embedding,
+                self._Row.content_hash,
             )
             result = await session.execute(stmt)
             return [
-                (row.card_id, row.collection, np.asarray(row.embedding, dtype=np.float32))
+                (
+                    row.card_id,
+                    row.collection,
+                    np.asarray(row.embedding, dtype=np.float32),
+                    row.content_hash or "",
+                )
                 for row in result.all()
             ]
 

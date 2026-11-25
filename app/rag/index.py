@@ -32,9 +32,16 @@ class IndexedCard:
     text: str
     payload: dict = field(default_factory=dict)
     vector: np.ndarray | None = None
+    #: 检索锚点关键词。存在时**检索文本改用**「标题 + 关键词」，
+    #: 而不是长正文——长文本在稠密向量空间里会因词汇重叠而收敛到
+    #: 几乎相同的向量（22 张理论卡曾被 bge-m3 判为同一张卡，
+    #: top1/top2 分差仅 0.001）。
+    keywords: list[str] = field(default_factory=list)
 
     @property
     def search_text(self) -> str:
+        if self.keywords:
+            return " ".join([self.title, *self.keywords])
         return " ".join([self.title, self.scene, self.text])
 
 
@@ -129,7 +136,7 @@ class CardIndex:
                 raw = json.load(fh)
             collection = raw.get("collection", "")
             for item in raw.get("cards", []):
-                payload = {k: v for k, v in item.items() if k not in {"id", "text"}}
+                payload = {k: v for k, v in item.items() if k not in {"id", "text", "keywords"}}
                 cards.append(
                     IndexedCard(
                         card_id=item["id"],
@@ -138,6 +145,7 @@ class CardIndex:
                         title=item.get("title", ""),
                         text=item.get("text", ""),
                         payload=payload,
+                        keywords=[str(k) for k in item.get("keywords", [])],
                     ),
                 )
         return cls(cards, embedder=embedder, encode=encode)

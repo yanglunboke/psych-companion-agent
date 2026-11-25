@@ -440,6 +440,8 @@ class ChatOutcome(BaseModel):
     needs: NeedResult | None = None
     risk_verdict: RiskVerdict | None = None
     retrieved: list[RetrievedCard] = Field(default_factory=list)
+    #: 理论卡（独立通道检索，不占策略卡的档位 K）
+    theory: list[RetrievedCard] = Field(default_factory=list)
     exercise: ExerciseCard | None = None
     escalation: EscalationRecord | None = None
     reflection: ReflectionResult | None = None

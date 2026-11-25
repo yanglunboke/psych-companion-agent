@@ -147,3 +147,105 @@ def test_pgvector_store_exposes_sync_api() -> None:
     assert hasattr(store, "fetch_all")
     assert hasattr(store, "delete_missing")
     assert hasattr(store, "upsert_many")
+
+
+# ----------------------------------------------------------------------
+# 检索锚点（keywords）+ 内容指纹失效
+# ----------------------------------------------------------------------
+
+
+def test_card_index_keywords_override_search_text() -> None:
+    """有 keywords 时检索文本改用「标题 + 关键词」，否则用「标题+场景+正文」。"""
+    from app.rag.index import IndexedCard
+
+    anchored = IndexedCard(
+        card_id="a",
+        collection="theory",
+        scene="*",
+        title="幸福的两个根本困惑",
+        text="很长很长的正文……",
+        keywords=["幸福指数", "和别人比"],
+    )
+    plain = IndexedCard(
+        card_id="b",
+        collection="student_reply",
+        scene="exam_failure",
+        title="考试失利",
+        text="正文内容",
+    )
+    assert anchored.search_text == "幸福的两个根本困惑 幸福指数 和别人比"
+    assert plain.search_text == "考试失利 exam_failure 正文内容"
+
+
+def test_content_hash_changes_with_search_text() -> None:
+    """检索文本变了 → 内容指纹变 → 库里的向量应被判为过期。"""
+    from app.container import content_hash_of
+    from app.rag.index import IndexedCard
+
+    card = IndexedCard(
+        card_id="a",
+        collection="theory",
+        scene="*",
+        title="T",
+        text="正文",
+        keywords=["旧锚点"],
+    )
+    before = content_hash_of(card)
+    card.keywords = ["新锚点"]
+    after = content_hash_of(card)
+    assert before != after
+
+
+def test_retriever_min_score_override() -> None:
+    """min_score 覆盖重排阈值（理论卡用更低的独立阈值）。"""
+    from app.rag.index import CardIndex, IndexedCard
+    from app.rag.retriever import Retriever, RetrieverConfig
+    from app.schemas import StructuredQuery
+
+    cards = [
+        IndexedCard(
+            card_id="t1",
+            collection="theory",
+            scene="*",
+            title="理论卡",
+            text="关于幸福与优势的论述内容",
+            keywords=["幸福", "优势"],
+        ),
+    ]
+    index = CardIndex(cards, embedder=HashingEmbedder(dim=64))
+    retriever = Retriever(
+        index, RetrieverConfig(rerank_min_score=0.45, theory_rerank_min_score=0.35)
+    )
+    query = StructuredQuery(collection="theory", scene="", keywords=["幸福优势"])
+
+    strict = retriever.search(query, collections=["theory"])
+    loose = retriever.search(query, collections=["theory"], min_score=0.0)
+    # 放宽阈值后候选只会更多或相等
+    assert len(loose.reranked) >= len(strict.reranked)
+
+
+def test_retriever_max_selected_override() -> None:
+    """max_selected 覆盖档位 K，理论卡不挤占策略卡名额。"""
+    from app.rag.index import CardIndex, IndexedCard
+    from app.rag.retriever import Retriever, RetrieverConfig
+    from app.schemas import StructuredQuery
+
+    cards = [
+        IndexedCard(
+            card_id=f"t{i}",
+            collection="theory",
+            scene="*",
+            title=f"理论卡{i}",
+            text="幸福与优势的理论论述内容",
+            keywords=["幸福", "优势"],
+        )
+        for i in range(6)
+    ]
+    index = CardIndex(cards, embedder=HashingEmbedder(dim=64))
+    retriever = Retriever(index, RetrieverConfig(dynamic_k_by_fit={"情绪疏导": 3}))
+    query = StructuredQuery(collection="theory", scene="", keywords=["幸福优势"], fit="情绪疏导")
+
+    limited = retriever.search(query, collections=["theory"], max_selected=2)
+    assert len(limited.selected) <= 2
+    # dynamic_k 记录的是**实际生效**的上限（已被 max_selected 覆盖）
+    assert limited.dynamic_k == 2

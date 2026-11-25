@@ -150,8 +150,12 @@ PG_DSN=postgresql+psycopg://psych:psych@localhost:5433/psych
 （bge-m3 编码几十张卡要几十秒），`runtime.vector` 里能看到明细：
 
 ```json
-{ "loaded_from_pgvector": 46, "encoded": 0, "pruned": 3, "cards": 46 }
+{ "loaded_from_pgvector": 68, "encoded": 0, "stale": 0, "pruned": 0, "cards": 68 }
 ```
+
+> **内容指纹**：`card_vectors` 表带 `content_hash` 列（卡片**检索文本**的 SHA-256）。
+> 卡片正文或检索锚点（`keywords`）一改，指纹即失效、向量自动重编并回写——
+> 否则库里存的是"旧文本的向量"，与当前语义完全错位。`stale` 字段报告本次重编的条数。
 
 > **Windows 提示**：`run.py` 已在 Windows 下强制使用 `SelectorEventLoop`
 > （psycopg3 异步驱动不兼容默认的 `ProactorEventLoop`），无需手动干预。

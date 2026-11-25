@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     score_gap_threshold: float = 0.15
     #: 本轮 Prompt 里策略卡正文的字符预算（超出挤占上下文、拖慢首字）
     card_char_budget: int = 1200
+    #: 理论卡（积极心理学理论依据）每轮最多带几张进 Prompt。
+    #: 走独立检索通道，**不占**策略卡的档位 K 名额。
+    theory_top_k: int = 2
+    #: 理论卡的独立重排阈值（低于策略卡的 0.45——理论卡无场景匹配，
+    #: 分数量纲不同，共用阈值会误杀大部分理论卡）
+    theory_rerank_min_score: float = 0.35
 
     # ---------------- 高危上报 ----------------
     escalation_webhook_url: str = ""

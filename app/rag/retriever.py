@@ -37,14 +37,23 @@ class LocalCrossEncoder(CrossEncoderReranker):
 
     之所以要"读正文"：召回阶段只看标签，场景标签相近但规则正文不同的卡会混进来；
     这一步把查询与卡片全文放在一起比较，才知道是不是"在说同一件事"。
+
+    **理论卡例外**：理论卡全部 ``scene="*"``，字段匹配对它们完全无区分度
+    （都拿同一档分），只能靠 IDF 覆盖那 0.10 权重区分——实测会出现
+    "焦虑睡不着"选到"道德厌恶与升华"这种明显不相关的结果。理论卡改用
+    **语义相似度主导**打分，因为它们没有场景约束，主题相关性就是唯一信号。
     """
 
     name = "local-cross-encoder"
 
     def __init__(self, index: CardIndex) -> None:
         self.index = index
+        self._qvec_cache: dict[str, np.ndarray] = {}
 
     def score(self, query: StructuredQuery, card: IndexedCard) -> float:
+        if card.collection == "theory":
+            return self._score_theory(query, card)
+
         payload = card.payload
         score = 0.0
 
@@ -75,6 +84,36 @@ class LocalCrossEncoder(CrossEncoderReranker):
         score += 0.10 * self._coverage(query, card)
 
         return round(min(score, 1.0), 4)
+
+    def _query_vector(self, query: StructuredQuery) -> np.ndarray | None:
+        """查询向量（按查询串缓存，避免每张卡重复编码）。"""
+        key = query.to_query_string()
+        cached = self._qvec_cache.get(key)
+        if cached is None:
+            try:
+                cached = self.index.embedder.embed(key)
+            except Exception:  # noqa: BLE001 - 模型不可用时退回字段匹配
+                return None
+            self._qvec_cache[key] = cached
+        return cached
+
+    def _score_theory(self, query: StructuredQuery, card: IndexedCard) -> float:
+        """理论卡打分：语义相似度主导 + 关键词锚点辅助。
+
+        理论卡没有场景约束，主题相关性是唯一信号，因此以 bge-m3 余弦相似度
+        为主（与向量召回同一把尺子）。但纯语义不够——「大家都比我优秀」这类
+        查询与多张卡都语义相近，故保留较高权重的 IDF 词项覆盖，让每张卡
+        的 ``keywords`` 锚点（主题词）能拉开差距。
+
+        相似度低于重排阈值的理论卡会被自然过滤掉。
+        """
+        qv = self._query_vector(query)
+        if qv is None or card.vector is None:
+            return 0.0
+        cos = float(np.dot(qv, card.vector))
+        if cos <= 0:
+            return 0.0
+        return round(min(0.65 * cos + 0.35 * self._coverage(query, card), 1.0), 4)
 
     def _coverage(self, query: StructuredQuery, card: IndexedCard) -> float:
         """查询词项在卡片正文中的 IDF 加权覆盖率。"""
@@ -109,6 +148,11 @@ class RetrieverConfig:
     dynamic_k_by_fit: dict[str, int] | None = None
     score_gap_threshold: float = 0.15
     card_char_budget: int = 1200
+    #: 理论卡的**独立**重排阈值。理论卡没有场景约束（``scene="*"``），
+    #: 重排分天然低于策略卡（策略卡靠场景匹配直接拿 0.45），
+    #: 共用一个阈值会把大部分理论卡误杀——实测「我一点优点都没有」
+    #: 的 top1 得分 0.436，差 0.014 就被 0.45 挡在门外。
+    theory_rerank_min_score: float = 0.35
 
 
 class Retriever:
@@ -144,8 +188,17 @@ class Retriever:
         query: StructuredQuery,
         *,
         collections: list[str] | None = None,
+        max_selected: int | None = None,
+        min_score: float | None = None,
     ) -> RetrievalResult:
-        """执行完整四步检索。"""
+        """执行完整四步检索。
+
+        ``max_selected`` 覆盖"档位 K"（动态 K），用于把**理论卡**这类
+        补充素材与策略卡分开限流——理论卡不该挤占策略卡的档位名额。
+
+        ``min_score`` 覆盖重排阈值。理论卡与策略卡的分数量纲不同
+        （理论卡无场景匹配），需要各自独立的阈值。
+        """
         collections = collections or [query.collection]
         candidates = [c for col in collections for c in self.index.by_collection(col)]
         if not candidates:
@@ -201,11 +254,12 @@ class Retriever:
         fused = fused[: self.config.rerank_top_k]
 
         # ---------- 步骤 3：重排（读正文） ----------
+        threshold = self.config.rerank_min_score if min_score is None else min_score
         reranked: list[RetrievedCard] = []
         for item in fused:
             card = card_by_id[item.card_id]
             rerank_score = self.reranker.score(query, card)
-            if rerank_score < self.config.rerank_min_score:
+            if rerank_score < threshold:
                 continue
             item.rerank_score = rerank_score
             item.final_score = rerank_score
@@ -214,7 +268,9 @@ class Retriever:
         reranked = reranked[: self.config.rerank_top_k]
 
         # ---------- 步骤 4：截断 ----------
-        selected, dynamic_k, token_used = self._truncate(query, reranked)
+        selected, dynamic_k, token_used = self._truncate(
+            query, reranked, max_selected=max_selected
+        )
 
         return RetrievalResult(
             query=query,
@@ -254,6 +310,8 @@ class Retriever:
         self,
         query: StructuredQuery,
         reranked: list[RetrievedCard],
+        *,
+        max_selected: int | None = None,
     ) -> tuple[list[RetrievedCard], int, int]:
         """断崖截断 + 档位 K + token 预算。"""
         if not reranked:
@@ -268,9 +326,11 @@ class Retriever:
             kept.append(card)
             prev_score = card.final_score
 
-        # 档位 K
+        # 档位 K（max_selected 显式覆盖）
         dynamic_k = self.config.dynamic_k_by_fit or {}
         limit = dynamic_k.get(query.fit, len(kept))
+        if max_selected is not None:
+            limit = max_selected
 
         # token 预算
         budget = self.config.card_char_budget

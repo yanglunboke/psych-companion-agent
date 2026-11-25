@@ -34,6 +34,7 @@ def build_user_message(
     emotion: EmotionResult | None = None,
     needs: NeedResult | None = None,
     cards: Sequence[RetrievedCard] = (),
+    theory_cards: Sequence[RetrievedCard] = (),
     exercise_text: str | None = None,
     reflection_hint: str | None = None,
     extra: dict[str, Any] | None = None,
@@ -59,6 +60,17 @@ def build_user_message(
                 "final_score": c.final_score,
             }
             for c in cards
+        ],
+        "theory_cards": [
+            {
+                "card_id": c.card_id,
+                "collection": c.collection,
+                "scene": c.scene,
+                "title": c.title,
+                "text": c.text,
+                "final_score": c.final_score,
+            }
+            for c in theory_cards
         ],
         "exercise_text": exercise_text,
         "reflection_hint": reflection_hint,
@@ -97,6 +109,16 @@ def build_user_message(
         blocks.append("【本轮检索到的策略卡】")
         for card in cards:
             blocks.append(f"- {card.card_id}（{card.collection} / {card.scene}）：{card.text}")
+    if theory_cards:
+        blocks.append("")
+        blocks.append("【可引用的心理学理论依据】")
+        blocks.append(
+            "以下是与本轮情绪/需求相关的积极心理学理论与研究证据。"
+            "仅在与当前回复真正相关时才引用（一句话带出即可），"
+            "不要堆砌、不要为了显示专业而强行引用；不相关就完全不要提。"
+        )
+        for card in theory_cards:
+            blocks.append(f"- {card.card_id}（{card.title}）：{card.text}")
     if exercise_text:
         blocks.append("")
         blocks.append("【练习卡】")

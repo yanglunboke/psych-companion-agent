@@ -50,6 +50,7 @@ from app.schemas import (
     Route,
     SessionContext,
     Speaker,
+    StructuredQuery,
     Turn,
 )
 from app.workers.emotion import EmotionWorker, RiskScorer
@@ -307,7 +308,10 @@ class Orchestrator:
         )
         outcome_decision: OrchestratorDecision = decision
 
-        # 策略检索（回应卡 + 禁止说法卡同时取）
+        # 策略检索（回应卡 + 禁止说法卡）
+        # 理论卡走**独立通道**：它是"可引用的理论依据"，不是"怎么回应"的
+        # 流程约束。若与策略卡混在同一条流水线里竞争档位 K，不相关的理论卡
+        # 会挤占策略卡名额（实测出现过"痛感实验"在考试失利/焦虑场景入选）。
         t0 = time.perf_counter()
         query = build_query(outcome.emotion, needs)
         retrieval = self.retriever.search(query, collections=["student_reply", "ban"])
@@ -330,6 +334,39 @@ class Orchestrator:
             duration_ms=(time.perf_counter() - t0) * 1000,
         )
 
+        # 理论卡检索（独立通道，单独限流，不占策略卡的档位 K）
+        # 理论卡用**学生原话**做纯语义检索：结构化查询串（scene/distortion/
+        # fit/steps）全是标签，不同场景高度相似，理论卡之间无从区分
+        # （实测"杜鲁门效应"会在 5 个场景里出现 4 次）。理论卡没有场景约束，
+        # 主题相关性就是唯一信号，用原话最准。
+        t0 = time.perf_counter()
+        theory_query = StructuredQuery(
+            collection="theory",
+            scene="",
+            keywords=[ctx.current_text],
+        )
+        theory = self.retriever.search(
+            theory_query,
+            collections=["theory"],
+            max_selected=self.settings.theory_top_k,
+            min_score=self.settings.theory_rerank_min_score,
+        )
+        outcome.theory = list(theory.selected)
+        trace.record(
+            "theory_retrieval",
+            key_args={
+                "collection": "theory",
+                "recalled_vector": len(theory.recalled_vector),
+                "recalled_bm25": len(theory.recalled_bm25),
+                "fused": len(theory.fused),
+                "reranked": len(theory.reranked),
+                "selected": [c.card_id for c in theory.selected],
+                "max_selected": self.settings.theory_top_k,
+            },
+            success=True,
+            duration_ms=(time.perf_counter() - t0) * 1000,
+        )
+
         # 积极引导（流式）
         t0 = time.perf_counter()
         ttft = 0.0
@@ -339,6 +376,7 @@ class Orchestrator:
             outcome.emotion,
             needs,
             retrieval.selected,
+            theory_cards=outcome.theory,
             reflection_hint=ctx.reflection_hint,
         ):
             if not chunks:

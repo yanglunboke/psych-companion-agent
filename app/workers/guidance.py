@@ -83,7 +83,9 @@ class GuidanceWorker(BaseWorker):
                 scene=query,
                 keywords=[query],
             )
-            result = self.retriever.search(structured, collections=["student_reply", "ban"])
+            result = self.retriever.search(
+                structured, collections=["student_reply", "ban", "theory"]
+            )
             lines = [f"- {c.card_id}：{c.text}" for c in result.selected]
             return ToolResponse(
                 content=[TextBlock(type="text", text="\n".join(lines) or "没有匹配的卡片")]
@@ -144,6 +146,7 @@ class GuidanceWorker(BaseWorker):
         needs: NeedResult,
         cards: Sequence[RetrievedCard] = (),
         *,
+        theory_cards: Sequence[RetrievedCard] = (),
         exercise_text: str | None = None,
         reflection_hint: str | None = None,
     ) -> AsyncIterator[str]:
@@ -155,6 +158,7 @@ class GuidanceWorker(BaseWorker):
             emotion=emotion,
             needs=needs,
             cards=cards,
+            theory_cards=theory_cards,
             exercise_text=exercise_text,
             reflection_hint=reflection_hint,
         )

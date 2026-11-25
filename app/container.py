@@ -33,6 +33,18 @@ from app.workers.needs import NeedsWorker
 logger = logging.getLogger(__name__)
 
 
+def content_hash_of(card: Any) -> str:
+    """卡片**检索文本**的内容指纹。
+
+    卡片正文或检索锚点改了 → 指纹变 → 库里的向量视为过期，重新编码。
+    只比对 card_id 是不够的：同一张卡换了检索文本却复用旧向量，
+    会让库里存的是"旧文本的向量"，与当前语义完全错位。
+    """
+    import hashlib
+
+    return hashlib.sha256(card.search_text.encode("utf-8")).hexdigest()
+
+
 class Container:
     """组件容器。"""
 
@@ -71,6 +83,7 @@ class Container:
                 dynamic_k_by_fit=dict(s.dynamic_k_by_fit),
                 score_gap_threshold=s.score_gap_threshold,
                 card_char_budget=s.card_char_budget,
+                theory_rerank_min_score=s.theory_rerank_min_score,
             ),
         )
 
@@ -189,7 +202,8 @@ class Container:
         if store is not None:
             by_id = {c.card_id: c for c in self.card_index.cards}
             loaded_ids: set[str] = set()
-            for card_id, collection, vec in existing:
+            stale: set[str] = set()
+            for card_id, collection, vec, content_hash in existing:
                 card = by_id.get(card_id)
                 # 卡片已删除或换了集合 → 这条向量该被清理，不装载
                 if card is None or card.collection != collection:
@@ -197,16 +211,20 @@ class Container:
                 # 维度与当前模型不符（换过 embedding 模型）→ 丢弃，重新编码
                 if len(vec) != s.embedding_dim:
                     continue
+                # 内容指纹不符（卡片正文/检索文本改过）→ 向量过期，重新编码
+                if content_hash != content_hash_of(card):
+                    stale.add(card_id)
+                    continue
                 if card.vector is None:
                     self.card_index.set_vector(card_id, vec)
                     loaded_ids.add(card_id)
             loaded = len(loaded_ids)
 
-            # 只编码库里没有的卡
+            # 只编码库里没有或已过期的卡
             encoded = self.card_index.encode_missing()
             if encoded:
                 pending = [
-                    (c.card_id, c.collection, c.vector)
+                    (c.card_id, c.collection, c.vector, content_hash_of(c))
                     for c in self.card_index.cards
                     if c.vector is not None and c.card_id not in loaded_ids
                 ]
@@ -224,13 +242,15 @@ class Container:
                 "dim": s.embedding_dim,
                 "loaded_from_pgvector": loaded,
                 "encoded": encoded,
+                "stale": len(stale),
                 "pruned": pruned,
                 "cards": len(self.card_index.cards),
             }
             logger.info(
-                "PGVector 就绪：装载 %d 条、补编 %d 条、清理 %d 条、卡片 %d 张",
+                "PGVector 就绪：装载 %d 条、补编 %d 条、过期 %d 条、清理 %d 条、卡片 %d 张",
                 loaded,
                 encoded,
+                len(stale),
                 pruned,
                 len(self.card_index.cards),
             )
