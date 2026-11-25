@@ -158,6 +158,44 @@ class PgVectorStore:
                 (row.card_id, row.collection, float(row.sim)) for row in result.all()
             ]
 
+    async def fetch_all(self) -> list[tuple[str, str, np.ndarray]]:
+        """读出库里全部向量。
+
+        供启动时装载：把已持久化的向量灌回内存索引，省掉重新编码
+        （bge-m3 编码几十张卡要几十秒）。
+        """
+        _, sessionmaker = self._build_engine()
+        from sqlalchemy import select  # noqa: PLC0415
+
+        async with sessionmaker() as session:
+            stmt = select(
+                self._Row.card_id,
+                self._Row.collection,
+                self._Row.embedding,
+            )
+            result = await session.execute(stmt)
+            return [
+                (row.card_id, row.collection, np.asarray(row.embedding, dtype=np.float32))
+                for row in result.all()
+            ]
+
+    async def delete_missing(self, keep_ids: list[str]) -> int:
+        """删除不在 ``keep_ids`` 里的向量（清理卡片删除/改 id 后的残留）。
+
+        返回删除条数。
+        """
+        _, sessionmaker = self._build_engine()
+        from sqlalchemy import delete  # noqa: PLC0415
+
+        async with sessionmaker() as session:
+            if keep_ids:
+                stmt = delete(self._Row).where(self._Row.card_id.notin_(keep_ids))
+            else:
+                stmt = delete(self._Row)
+            result = await session.execute(stmt)
+            await session.commit()
+            return int(result.rowcount or 0)
+
     async def delete(self, card_id: str) -> None:
         _, sessionmaker = self._build_engine()
         async with sessionmaker() as session:

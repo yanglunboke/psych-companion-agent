@@ -41,7 +41,20 @@ class IndexedCard:
 class CardIndex:
     """全部卡片的内存索引。"""
 
-    def __init__(self, cards: list[IndexedCard], embedder: Embedder | None = None) -> None:
+    def __init__(
+        self,
+        cards: list[IndexedCard],
+        embedder: Embedder | None = None,
+        *,
+        encode: bool = True,
+    ) -> None:
+        """构建索引。
+
+        ``encode=False`` 时**不**给卡片编码向量（向量化可能很贵，
+        bge-m3 编码几十张卡要几十秒）。配合 :meth:`encode_missing` 可
+        在启动时装载阶段按需补编——例如先从 PGVector 复用已持久化的
+        向量，只对缺失的卡编码。
+        """
         self.embedder = embedder or HashingEmbedder()
         self._cards: dict[str, IndexedCard] = {c.card_id: c for c in cards}
         self._by_collection: dict[str, list[IndexedCard]] = {}
@@ -49,9 +62,39 @@ class CardIndex:
             self._by_collection.setdefault(card.collection, []).append(card)
         self._bm25 = BM25Index()
         for card in cards:
-            card.vector = self.embedder.embed(card.search_text)
             self._bm25.add(card.card_id, card.search_text)
         self._bm25.finalize()
+        if encode:
+            self.encode_missing()
+
+    # ------------------------------------------------------------------
+    def encode_missing(self) -> int:
+        """给**没有向量**的卡编码，返回本次编码的卡数。
+
+        已经有向量的卡不重复编码（向量来自内存缓存或 PGVector 装载）。
+        """
+        pending = [c for c in self._cards.values() if c.vector is None]
+        if not pending:
+            return 0
+        vectors = self.embedder.embed_many([c.search_text for c in pending])
+        for card, vec in zip(pending, vectors):
+            card.vector = np.asarray(vec, dtype=np.float32)
+        return len(pending)
+
+    def set_vector(self, card_id: str, vector: np.ndarray) -> bool:
+        """给指定卡灌入向量（从持久化存储装载时用）。
+
+        卡不存在时返回 ``False``。
+        """
+        card = self._cards.get(card_id)
+        if card is None:
+            return False
+        card.vector = np.asarray(vector, dtype=np.float32)
+        return True
+
+    def missing_vector_ids(self) -> list[str]:
+        """返回还没有向量的卡 id。"""
+        return [c.card_id for c in self._cards.values() if c.vector is None]
 
     # ------------------------------------------------------------------
     @property
@@ -76,6 +119,8 @@ class CardIndex:
         cls,
         files: list[Path],
         embedder: Embedder | None = None,
+        *,
+        encode: bool = True,
     ) -> "CardIndex":
         """从 JSON 文件加载卡片。"""
         cards: list[IndexedCard] = []
@@ -95,7 +140,7 @@ class CardIndex:
                         payload=payload,
                     ),
                 )
-        return cls(cards, embedder=embedder)
+        return cls(cards, embedder=embedder, encode=encode)
 
 
 def default_card_files(data_dir: Path) -> list[Path]:
@@ -107,10 +152,15 @@ def default_card_files(data_dir: Path) -> list[Path]:
     ]
 
 
-def build_default_index(data_dir: Path, embedder: Embedder | None = None) -> CardIndex:
+def build_default_index(
+    data_dir: Path,
+    embedder: Embedder | None = None,
+    *,
+    encode: bool = True,
+) -> CardIndex:
     """构建默认索引（只加载存在的文件）。"""
     files = [p for p in default_card_files(data_dir) if p.exists()]
-    return CardIndex.from_files(files, embedder=embedder)
+    return CardIndex.from_files(files, embedder=embedder, encode=encode)
 
 
 __all__ = [

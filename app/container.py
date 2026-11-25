@@ -47,7 +47,13 @@ class Container:
 
         # ---- 知识库与检索 ----
         self.embedder = build_embedder(s.embedding_backend, s.embedding_model)
-        self.card_index = build_default_index(s.data_dir, embedder=self.embedder)
+        # bge-m3 编码几十张卡要几十秒。启用语义模型时先不编码，
+        # 启动装配阶段优先从 PGVector 复用已持久化的向量，只对缺失的补编。
+        self.card_index = build_default_index(
+            s.data_dir,
+            embedder=self.embedder,
+            encode=s.embedding_backend != "bge",
+        )
         self.vector_store: Any = None
         self.vector_status: dict[str, Any] = {
             "embedder": self.embedder.name,
@@ -145,37 +151,100 @@ class Container:
         )
 
     async def setup_vector_store(self) -> None:
-        """按配置装配 PGVector（连不上则保持内存索引）。"""
-        s = self.settings
-        if s.vector_backend != "pgvector" or not s.pg_dsn:
-            return
-        try:
-            from app.rag.pgvector_store import PgVectorStore
+        """装配向量存储。
 
-            store = PgVectorStore(s.pg_dsn, dim=s.embedding_dim)
-            await store.init_schema()
-            # 把当前内存索引里的卡片向量灌进 PGVector（幂等 upsert）
-            items = [
-                (c.card_id, c.collection, c.vector)
-                for c in self.card_index.cards
-                if c.vector is not None
-            ]
-            await store.upsert_many(items)
+        无论是否连上 PGVector，都要保证内存索引里**有**向量，否则语义召回会空转。
+        装配顺序：
+
+        1. 连 PGVector（连不上则降级为进程内索引）；
+        2. 从库里装载已持久化的向量（省掉重复编码——bge-m3 编码几十张卡要几十秒）；
+        3. 只对**缺失**的卡编码；
+        4. 增量写回，并清理库里已不存在的卡（prune），保持库与卡片源一致。
+        """
+        s = self.settings
+        store = None
+
+        if s.vector_backend == "pgvector" and s.pg_dsn:
+            try:
+                from app.rag.pgvector_store import PgVectorStore
+
+                store = PgVectorStore(s.pg_dsn, dim=s.embedding_dim)
+                await store.init_schema()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("PGVector 不可用（%s），向量检索保持进程内索引", exc)
+                store = None
+
+        loaded = 0
+        pruned = 0
+        encoded = 0
+
+        if store is not None:
+            try:
+                existing = await store.fetch_all()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("PGVector 读取向量失败（%s），改用进程内索引", exc)
+                existing = []
+                store = None
+
+        if store is not None:
+            by_id = {c.card_id: c for c in self.card_index.cards}
+            loaded_ids: set[str] = set()
+            for card_id, collection, vec in existing:
+                card = by_id.get(card_id)
+                # 卡片已删除或换了集合 → 这条向量该被清理，不装载
+                if card is None or card.collection != collection:
+                    continue
+                # 维度与当前模型不符（换过 embedding 模型）→ 丢弃，重新编码
+                if len(vec) != s.embedding_dim:
+                    continue
+                if card.vector is None:
+                    self.card_index.set_vector(card_id, vec)
+                    loaded_ids.add(card_id)
+            loaded = len(loaded_ids)
+
+            # 只编码库里没有的卡
+            encoded = self.card_index.encode_missing()
+            if encoded:
+                pending = [
+                    (c.card_id, c.collection, c.vector)
+                    for c in self.card_index.cards
+                    if c.vector is not None and c.card_id not in loaded_ids
+                ]
+                await store.upsert_many(pending)
+
+            # 清理库里已不存在（或换了集合）的卡
+            pruned = await store.delete_missing([c.card_id for c in self.card_index.cards])
+
+        if store is not None:
             self.vector_store = store
             self.vector_status = {
                 "embedder": self.embedder.name,
                 "store": "pgvector",
                 "detail": s.pg_dsn,
                 "dim": s.embedding_dim,
+                "loaded_from_pgvector": loaded,
+                "encoded": encoded,
+                "pruned": pruned,
+                "cards": len(self.card_index.cards),
             }
-            logger.info("PGVector 就绪：写入 %d 条卡片向量", len(items))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("PGVector 不可用（%s），向量检索保持进程内索引", exc)
+            logger.info(
+                "PGVector 就绪：装载 %d 条、补编 %d 条、清理 %d 条、卡片 %d 张",
+                loaded,
+                encoded,
+                pruned,
+                len(self.card_index.cards),
+            )
+        else:
+            # 没连上 PG：也要保证向量存在（首次要全量编码）
+            encoded = self.card_index.encode_missing()
             self.vector_status = {
                 "embedder": self.embedder.name,
                 "store": "memory",
-                "detail": f"PGVector 不可用，已降级：{exc}",
+                "detail": "进程内向量索引",
+                "encoded": encoded,
+                "cards": len(self.card_index.cards),
             }
+            logger.info("向量索引就绪：进程内，补编 %d 条", encoded)
 
     # ------------------------------------------------------------------
     def status(self) -> dict[str, Any]:

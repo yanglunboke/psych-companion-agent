@@ -145,6 +145,14 @@ PG_DSN=postgresql+psycopg://psych:psych@localhost:5433/psych
 启动后访问 `/api/meta`，`runtime.vector` 会如实显示 `embedder=bge-m3`、
 `store=pgvector`；连不上 PGVector 时自动降级回进程内哈希索引（服务照常能跑）。
 
+**PGVector 是向量的权威源**：启动时装配阶段会先从库里**装载**已持久化的向量，
+只对新增/缺失的卡编码，并自动清理库里已删除的卡。因此重启**不会**重复编码
+（bge-m3 编码几十张卡要几十秒），`runtime.vector` 里能看到明细：
+
+```json
+{ "loaded_from_pgvector": 46, "encoded": 0, "pruned": 3, "cards": 46 }
+```
+
 > **Windows 提示**：`run.py` 已在 Windows 下强制使用 `SelectorEventLoop`
 > （psycopg3 异步驱动不兼容默认的 `ProactorEventLoop`），无需手动干预。
 

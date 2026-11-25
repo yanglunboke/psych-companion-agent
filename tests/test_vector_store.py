@@ -82,3 +82,68 @@ def test_pgvector_store_does_not_import_on_construct() -> None:
     store = PgVectorStore("postgresql+psycopg://x:y@localhost:5432/x")
     assert store.dim == 1024
     assert store._engine is None  # 尚未建 engine
+
+
+# ----------------------------------------------------------------------
+# 延迟编码 + 装载（PGVector 作为向量权威源）
+# ----------------------------------------------------------------------
+
+
+def test_card_index_encode_false_leaves_vectors_empty() -> None:
+    """encode=False 时不编码，卡片向量全为空。"""
+    from app.rag.index import IndexedCard, CardIndex
+
+    cards = [
+        IndexedCard(card_id="a", collection="student_reply", scene="s", title="t", text="x"),
+        IndexedCard(card_id="b", collection="student_reply", scene="s", title="t", text="y"),
+    ]
+    index = CardIndex(cards, embedder=HashingEmbedder(dim=32), encode=False)
+    assert len(index.missing_vector_ids()) == 2
+    assert all(c.vector is None for c in index.cards)
+
+
+def test_card_index_encode_missing_only_encodes_pending() -> None:
+    """encode_missing 只补编没有向量的卡，已有向量不重复编码。"""
+    from app.rag.index import IndexedCard, CardIndex
+
+    cards = [
+        IndexedCard(card_id="a", collection="student_reply", scene="s", title="t", text="x"),
+        IndexedCard(card_id="b", collection="student_reply", scene="s", title="t", text="y"),
+    ]
+    index = CardIndex(cards, embedder=HashingEmbedder(dim=32), encode=False)
+
+    # 模拟从 PGVector 装载：给 a 灌一个向量
+    existing = np.ones(32, dtype=np.float32)
+    assert index.set_vector("a", existing) is True
+    assert index.set_vector("missing-id", existing) is False
+
+    assert index.missing_vector_ids() == ["b"]
+    assert index.encode_missing() == 1
+    assert index.missing_vector_ids() == []
+    # a 的向量没被覆盖
+    assert np.allclose(index.get("a").vector, existing)
+    # b 被编码成了 32 维向量
+    assert index.get("b").vector is not None
+    assert index.get("b").vector.shape == (32,)
+
+
+def test_card_index_encode_missing_is_idempotent() -> None:
+    """重复调用 encode_missing 不会重复编码（第二次返回 0）。"""
+    from app.rag.index import IndexedCard, CardIndex
+
+    cards = [
+        IndexedCard(card_id="a", collection="student_reply", scene="s", title="t", text="x"),
+    ]
+    index = CardIndex(cards, embedder=HashingEmbedder(dim=16), encode=False)
+    assert index.encode_missing() == 1
+    assert index.encode_missing() == 0
+
+
+def test_pgvector_store_exposes_sync_api() -> None:
+    """PGVector 提供装载（fetch_all）与清理（delete_missing）接口。"""
+    from app.rag.pgvector_store import PgVectorStore
+
+    store = PgVectorStore("postgresql+psycopg://x:y@localhost:5432/x")
+    assert hasattr(store, "fetch_all")
+    assert hasattr(store, "delete_missing")
+    assert hasattr(store, "upsert_many")
