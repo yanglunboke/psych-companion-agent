@@ -47,6 +47,8 @@ class Collection(str, Enum):
     STUDENT_REPLY = "student_reply"
     BAN = "ban"
     EXERCISE = "exercise"
+    #: 理论卡（积极心理学理论、研究证据），给模型提供可引用的依据
+    THEORY = "theory"
 
 
 class RiskSource(str, Enum):

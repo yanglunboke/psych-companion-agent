@@ -149,6 +149,7 @@ def default_card_files(data_dir: Path) -> list[Path]:
         data_dir / "cards" / "student_reply_cards.json",
         data_dir / "cards" / "ban_cards.json",
         data_dir / "cards" / "exercise_cards.json",
+        data_dir / "cards" / "theory_cards.json",
     ]
 
 
