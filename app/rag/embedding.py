@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import math
+import threading
+import time
 from collections import Counter
 
 import numpy as np
@@ -30,6 +32,9 @@ class Embedder:
     #: 该值为 None，就回到文档口径的 0.35。
     calibrated_min_score: float | None = None
 
+    #: 是否需要在启动后预热（真实模型为 True，哈希向量器为 False）
+    needs_warmup: bool = False
+
     def embed(self, text: str) -> np.ndarray:  # pragma: no cover - 接口
         raise NotImplementedError
 
@@ -37,6 +42,10 @@ class Embedder:
         if not texts:
             return np.zeros((0, self.dim), dtype=np.float32)
         return np.vstack([self.embed(t) for t in texts])
+
+    def warmup(self) -> float:
+        """提前加载模型、跑一次小编码。返回耗时秒数；默认无需预热。"""
+        return 0.0
 
 
 class HashingEmbedder(Embedder):
@@ -89,18 +98,36 @@ class SentenceTransformerEmbedder(Embedder):
 
     name = "bge-m3"
     calibrated_min_score = None
+    needs_warmup = True
 
     def __init__(self, model_name: str = "BAAI/bge-m3", *, device: str | None = None) -> None:
         self.model_name = model_name
         self._device = device
         self._model = None
+        # 加载锁：预热线程与首个请求可能同时触发加载，
+        # 没有锁会各加载一份模型（显存/内存翻倍，且更慢）。
+        self._load_lock = threading.Lock()
 
     def _load(self):
-        if self._model is None:
-            from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+        if self._model is not None:
+            return self._model
+        with self._load_lock:
+            if self._model is None:
+                from sentence_transformers import SentenceTransformer  # noqa: PLC0415
 
-            self._model = SentenceTransformer(self.model_name, device=self._device)
+                self._model = SentenceTransformer(self.model_name, device=self._device)
         return self._model
+
+    def warmup(self) -> float:
+        """后台预热：加载权重并跑一次小编码，把首字延迟从请求里挪走。
+
+        bge-m3 首次加载约 20–30 秒（含读盘 + torch 初始化）。不在启动时预热，
+        这笔开销就会落在**重启后的第一条真实对话**上。
+        """
+        started = time.perf_counter()
+        model = self._load()
+        model.encode("预热", normalize_embeddings=True)
+        return time.perf_counter() - started
 
     def embed(self, text: str) -> np.ndarray:
         model = self._load()

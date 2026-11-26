@@ -15,6 +15,9 @@ IDF 词项覆盖 + 余弦），生产可替换为真实 cross-encoder 模型（�
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -49,6 +52,8 @@ class LocalCrossEncoder(CrossEncoderReranker):
     def __init__(self, index: CardIndex) -> None:
         self.index = index
         self._qvec_cache: dict[str, np.ndarray] = {}
+        # 检索可能在线程池里跑（见 Retriever.asearch），缓存必须加锁。
+        self._cache_lock = threading.Lock()
 
     def score(self, query: StructuredQuery, card: IndexedCard) -> float:
         if card.collection == "theory":
@@ -88,12 +93,15 @@ class LocalCrossEncoder(CrossEncoderReranker):
     def _query_vector(self, query: StructuredQuery) -> np.ndarray | None:
         """查询向量（按查询串缓存，避免每张卡重复编码）。"""
         key = query.to_query_string()
-        cached = self._qvec_cache.get(key)
-        if cached is None:
-            try:
-                cached = self.index.embedder.embed(key)
-            except Exception:  # noqa: BLE001 - 模型不可用时退回字段匹配
-                return None
+        with self._cache_lock:
+            cached = self._qvec_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            cached = self.index.embedder.embed(key)
+        except Exception:  # noqa: BLE001 - 模型不可用时退回字段匹配
+            return None
+        with self._cache_lock:
             self._qvec_cache[key] = cached
         return cached
 
@@ -204,9 +212,13 @@ class Retriever:
         if not candidates:
             return RetrievalResult(query=query, dynamic_k=0)
 
+        t_all = time.perf_counter()
+
         # ---------- 步骤 1：召回（向量 ∥ BM25） ----------
         min_score = self.effective_vector_min_score()
+        t_embed = time.perf_counter()
         qv = self.index.embedder.embed(query.to_query_string())
+        embed_ms = (time.perf_counter() - t_embed) * 1000
         vector_scored: list[tuple[IndexedCard, float]] = []
         for card in candidates:
             if card.vector is None:
@@ -254,6 +266,7 @@ class Retriever:
         fused = fused[: self.config.rerank_top_k]
 
         # ---------- 步骤 3：重排（读正文） ----------
+        t_rerank = time.perf_counter()
         threshold = self.config.rerank_min_score if min_score is None else min_score
         reranked: list[RetrievedCard] = []
         for item in fused:
@@ -266,12 +279,14 @@ class Retriever:
             reranked.append(item)
         reranked.sort(key=lambda c: c.final_score, reverse=True)
         reranked = reranked[: self.config.rerank_top_k]
+        rerank_ms = (time.perf_counter() - t_rerank) * 1000
 
         # ---------- 步骤 4：截断 ----------
         selected, dynamic_k, token_used = self._truncate(
             query, reranked, max_selected=max_selected
         )
 
+        total_ms = (time.perf_counter() - t_all) * 1000
         return RetrievalResult(
             query=query,
             recalled_vector=[
@@ -303,6 +318,35 @@ class Retriever:
             selected=selected,
             dynamic_k=dynamic_k,
             token_budget_used=token_used,
+            timings={
+                "embed": round(embed_ms, 2),
+                "recall": round(total_ms - embed_ms - rerank_ms, 2),
+                "rerank": round(rerank_ms, 2),
+                "total": round(total_ms, 2),
+            },
+        )
+
+    # ------------------------------------------------------------------
+    async def asearch(
+        self,
+        query: StructuredQuery,
+        *,
+        collections: list[str] | None = None,
+        max_selected: int | None = None,
+        min_score: float | None = None,
+    ) -> RetrievalResult:
+        """异步版 ``search``：把同步检索（含 CPU 编码）放到线程池执行。
+
+        ``model.encode()`` 是纯 CPU 的同步调用，直接在事件循环里跑会**卡住
+        整个进程**——冷启动时是 20–30 秒，热路径每轮也有 0.4 秒左右，期间
+        ``/health``、其他学生的对话全部停摆。放进线程池后，事件循环始终可响应。
+        """
+        return await asyncio.to_thread(
+            self.search,
+            query,
+            collections=collections,
+            max_selected=max_selected,
+            min_score=min_score,
         )
 
     # ------------------------------------------------------------------

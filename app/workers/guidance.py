@@ -83,7 +83,7 @@ class GuidanceWorker(BaseWorker):
                 scene=query,
                 keywords=[query],
             )
-            result = self.retriever.search(
+            result = await self.retriever.asearch(
                 structured, collections=["student_reply", "ban", "theory"]
             )
             lines = [f"- {c.card_id}：{c.text}" for c in result.selected]

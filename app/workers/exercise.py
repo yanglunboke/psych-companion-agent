@@ -42,7 +42,7 @@ class ExerciseWorker(BaseWorker):
             return None
 
         query = build_exercise_query(emotion, needs)
-        result = self.retriever.search(query, collections=["exercise"])
+        result = await self.retriever.asearch(query, collections=["exercise"])
         for card in result.selected:
             payload = card.payload
             if not payload.get("steps"):
@@ -63,7 +63,7 @@ class ExerciseWorker(BaseWorker):
         from app.schemas import StructuredQuery
 
         query = StructuredQuery(collection="exercise", scene=scene, keywords=[scene])
-        result = self.retriever.search(query, collections=["exercise"])
+        result = await self.retriever.asearch(query, collections=["exercise"])
         for card in result.selected:
             payload = card.payload
             if payload.get("steps"):
