@@ -11,12 +11,13 @@
 </head>
 <body>
   <svg class="icon-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 2.5c.4 5.1 2.4 7.1 7.5 7.5-5.1.4-7.1 2.4-7.5 7.5-.4-5.1-2.4-7.1-7.5-7.5 5.1-.4 7.1-2.4 7.5-7.5Z"/><path d="M19.5 16.5c.1 1.8.8 2.5 2.5 2.6-1.7.1-2.4.8-2.5 2.5-.1-1.7-.8-2.4-2.5-2.5 1.7-.1 2.4-.8 2.5-2.6Z"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2 4.5 5v6c0 5 3 8.6 7.5 11 4.5-2.4 7.5-6 7.5-11V5L12 2Z"/><path d="m9 12 2 2 4-4"/></symbol><symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 8.5c0 4.2-6.6 9.1-8.8 10.7C9.8 17.6 3.2 12.7 3.2 8.5a4.7 4.7 0 0 1 8.8-2.2 4.7 4.7 0 0 1 8.8 2.2Z"/></symbol><symbol id="i-book" viewBox="0 0 24 24"><path d="M12 6c-3-2-6-2-9-1v13c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1Zm0 0v13"/></symbol><symbol id="i-close" viewBox="0 0 24 24"><path d="m5 5 14 14M19 5 5 19"/></symbol><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol></svg>
-  <div class="layout">
+  <div class="layout" id="layout" hidden>
     <aside class="sidebar" id="sidebar" aria-label="侧边栏">
       <div class="brand"><div class="brand-mark"><svg><use href="#i-spark"/></svg></div><div><strong>心语</strong><small>陪你慢慢长大</small></div></div>
       <button class="new-chat" id="new-chat" type="button"><svg><use href="#i-plus"/></svg> 开始新对话</button>
       <div class="side-label">在这里，你可以</div>
       <div class="side-list"><div><svg><use href="#i-heart"/></svg><span>说说心里的事</span></div><div><svg><use href="#i-book"/></svg><span>试试轻量小练习</span></div><div><svg><use href="#i-shield"/></svg><span>了解求助方式</span></div></div>
+      <div class="side-user" id="side-user" hidden><div class="side-user-avatar" id="side-user-avatar">我</div><div class="side-user-text"><strong id="side-user-name">—</strong><small id="side-user-id">—</small></div><button class="side-logout" id="logout-btn" type="button">退出</button></div>
       <div class="sidebar-bottom"><span class="side-quote">“不用着急找到答案，<br>我们可以先从说出来开始。”</span><div class="side-separator"></div><p>这是一个辅助交流的工具，不替代老师、家长或专业帮助。紧急危险时，请立即联系身边可信任的成年人或当地紧急服务。</p></div>
     </aside>
     <main class="main">
@@ -27,5 +28,24 @@
     <aside class="info-rail" aria-label="使用说明"><div class="rail-kicker">ABOUT THIS SPACE</div><h2>每一种心情，<br>都值得被听见。</h2><p class="rail-lead">这里不会要求你立刻变好。我们先认真听，再一起看看能做什么。</p><div class="rail-divider"></div><div class="rail-point"><div class="rail-icon"><svg><use href="#i-heart"/></svg></div><div><strong>先倾听，再回应</strong><p>按你此刻的需要，选择陪伴、引导或练习。</p></div></div><div class="rail-point"><div class="rail-icon"><svg><use href="#i-book"/></svg></div><div><strong>适合时才建议练习</strong><p>不是每次谈话，都必须立刻解决问题。</p></div></div><div class="rail-point"><div class="rail-icon"><svg><use href="#i-shield"/></svg></div><div><strong>重要时刻，寻求帮助</strong><p>系统会尝试启动风险上报；是否送达请以页面提示为准。</p></div></div><div class="rail-note"><span class="rail-note-mark">?</span><p>如果正处于危险中，请不要等待系统回应，立即联系身边可信任的成年人或当地紧急服务。</p></div></aside>
   </div>
   <div class="mobile-scrim" id="mobile-scrim" hidden></div>
+  <div class="auth-gate" id="auth-gate">
+    <div class="auth-card">
+      <div class="auth-brand"><div class="brand-mark"><svg><use href="#i-spark"/></svg></div><div><strong>心语</strong><small>陪你慢慢长大</small></div></div>
+      <h1>先登录，再开始</h1>
+      <p class="auth-lead">用学号登录。同一个学号在任何设备上都对应同一个“你”，这样心语才记得住上次聊过的事。</p>
+      <form id="login-form" novalidate>
+        <label for="login-id">学号</label>
+        <input id="login-id" name="student_id" autocomplete="username" required minlength="3" maxlength="32" placeholder="例如 20260312" inputmode="text">
+        <label for="login-name">想让心语怎么称呼你（第一次登录时填，可不填）</label>
+        <input id="login-name" name="name" maxlength="32" placeholder="例如 小宇">
+        <label for="login-password">密码</label>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required minlength="6" placeholder="至少 6 位">
+        <p class="auth-hint">第一次用某个学号登录会自动创建账号；之后请用同一密码登录。</p>
+        <p class="auth-error" id="login-error" role="alert" hidden></p>
+        <button class="auth-submit" id="login-submit" type="submit">登录</button>
+      </form>
+      <p class="auth-foot">这是学校内部使用的陪伴工具，不替代老师、家长或专业帮助。</p>
+    </div>
+  </div>
 </body>
 </html>

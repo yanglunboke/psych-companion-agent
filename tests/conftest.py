@@ -19,6 +19,11 @@ os.environ["MODEL_PROVIDER"] = "mock"
 # 保证无网络、无模型权重、无 Docker 也能秒级通过。向量存储固定内存。
 os.environ["EMBEDDING_BACKEND"] = "hashing"
 os.environ["VECTOR_BACKEND"] = "memory"
+# 短期记忆固定进程内：测试不应依赖"本机恰好起了 Redis"，
+# 否则同样的代码在有/无 Redis 的机器上跑出两种结果。
+os.environ["MEMORY_BACKEND"] = "memory"
+# 调试接口默认关闭：.env 里可能为本机开发开了，测试要按"默认关"的契约跑。
+os.environ["DEBUG_API_ENABLED"] = "false"
 
 from app.config import Settings, reload_settings  # noqa: E402
 

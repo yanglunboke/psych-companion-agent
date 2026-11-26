@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>短期记忆调试台 · 心语</title>
+<style>
+  :root{
+    font-family:'Microsoft YaHei UI','PingFang SC','Noto Sans CJK SC',system-ui,sans-serif;
+    color:#273a35;background:#f7f7f2;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:34px 22px 60px}
+  .wrap{max-width:860px;margin:0 auto}
+  header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:22px}
+  h1{font-size:21px;margin:0;letter-spacing:-.02em}
+  .sub{color:#89978b;font-size:12px;margin-top:7px;line-height:1.7}
+  .badge{flex:none;border:1px solid #d9e6d9;background:#eef5ec;color:#3f7a60;border-radius:20px;padding:6px 12px;font-size:11px;font-weight:700}
+  .panel{background:#fff;border:1px solid #e6e9dd;border-radius:14px;padding:16px 18px;margin-bottom:16px}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  input[type=text]{
+    flex:1;min-width:220px;height:40px;border:1px solid #dce8dc;border-radius:10px;
+    padding:0 13px;font:inherit;font-size:13px;color:#344b40;outline:none;background:#fff;
+  }
+  input[type=text]:focus{border-color:#90ba99;box-shadow:0 0 0 3px #416f4914}
+  button{
+    height:40px;border:0;border-radius:10px;background:#3c8166;color:#fff;
+    font:inherit;font-size:13px;font-weight:600;padding:0 20px;cursor:pointer;
+  }
+  button:hover{background:#286b51}
+  button:disabled{background:#dce7dd;cursor:not-allowed}
+  .hint{color:#a1aea1;font-size:11px;margin-top:10px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+  .chip{
+    border:1px solid #e2ebdf;background:#f8faf6;color:#4a6b56;border-radius:8px;
+    padding:6px 10px;font-size:11px;font-family:ui-monospace,Consolas,monospace;cursor:pointer;
+  }
+  .chip:hover{background:#eef5ec;border-color:#cfe2c9}
+  .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+  .cell{border:1px solid #edf0eb;border-radius:10px;padding:9px 11px;background:#fafbf8}
+  .cell b{display:block;font-size:10px;color:#9aa89c;font-weight:700;letter-spacing:.06em;margin-bottom:5px}
+  .cell span{font-size:13px;color:#315c43;font-family:ui-monospace,Consolas,monospace;word-break:break-all}
+  .turn{display:flex;gap:10px;padding:12px 0;border-top:1px solid #f0f3ed}
+  .turn:first-child{border-top:0}
+  .who{flex:none;width:46px;font-size:11px;font-weight:700;padding-top:3px}
+  .who.student{color:#3f7a60}
+  .who.assistant{color:#8a9a8d}
+  .body{min-width:0;flex:1}
+  .text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.85;color:#344941}
+  .turn.student .text{background:#f4faf3;border:1px solid #e6f0e2;border-radius:10px;padding:9px 12px}
+  .trace{font-size:10px;color:#b0bcb2;margin-top:6px;font-family:ui-monospace,Consolas,monospace}
+  .empty{color:#9aa89c;font-size:12px;padding:14px 0}
+  .err{background:#fff4f1;color:#99483f;border:1px solid #f2d4cc;border-radius:10px;padding:10px 13px;font-size:12px;line-height:1.6}
+  .warn{background:#fff9f1;color:#8a6636;border:1px solid #f0e0c6;border-radius:10px;padding:10px 13px;font-size:11px;line-height:1.7;margin-top:14px}
+  code{background:#f0f3ed;border-radius:4px;padding:1px 5px;font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>短期记忆调试台</h1>
+      <div class="sub">查看某个会话在短期记忆里的窗口内容。短期记忆按学生存，同一学生可能有多个会话。只读，不会改动任何数据。</div>
+    </div>
+    <div class="badge" id="backend">后端：—</div>
+  </header>
+
+  <div class="panel">
+    <div class="row">
+      <input type="text" id="sid" placeholder="输入 session_id，例如 redis-demo-1" autocomplete="off">
+      <button id="go">查看</button>
+    </div>
+    <div class="chips" id="chips"></div>
+    <div class="hint">窗口按「学生轮次」截取：12 轮 = 12 次学生发言 + 12 次助手回复（最多 24 条）。这里看的是单个会话；模型侧会把该生多个会话合并取最近 12 轮。</div>
+  </div>
+
+  <div id="msg"></div>
+
+  <div class="panel" id="metaPanel" hidden>
+    <div class="meta" id="meta"></div>
+  </div>
+
+  <div class="panel" id="winPanel" hidden>
+    <div id="win"></div>
+  </div>
+
+  <div class="warn">
+    这个页面返回的是学生原话，属于敏感数据。仅在本机开发环境使用，不要暴露到公网。
+    若接口返回 404，说明 <code>DEBUG_API_ENABLED</code> 未开启。
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const sidInput = $('sid');
+const goBtn = $('go');
+
+function fmtTime(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function fmtTtl(sec) {
+  if (sec === null || sec === undefined) return '—';
+  if (sec < 3600) return `${Math.round(sec / 60)} 分钟`;
+  return `${(sec / 3600).toFixed(1)} 小时`;
+}
+
+function showError(text) {
+  const box = document.createElement('div');
+  box.className = 'err';
+  box.textContent = text;
+  $('msg').replaceChildren(box);
+}
+
+function clearMsg() { $('msg').replaceChildren(); }
+
+function renderMeta(data) {
+  const cells = [
+    ['学生', data.student_id || '—'],
+    ['后端', data.backend],
+    ['存储键', data.key],
+    ['消息条数', String(data.messages)],
+    ['学生轮数', String(data.turns)],
+    ['该生会话数', data.sessions === undefined ? '—' : String(data.sessions)],
+    ['剩余过期', fmtTtl(data.ttl_seconds)],
+    ['窗口取出', `${data.window_messages} 条`],
+  ];
+  $('meta').replaceChildren(...cells.map(([k, v]) => {
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+    const b = document.createElement('b');
+    b.textContent = k;
+    const s = document.createElement('span');
+    s.textContent = v === undefined || v === null ? '—' : v;
+    cell.append(b, s);
+    return cell;
+  }));
+  $('metaPanel').hidden = false;
+}
+
+function renderWindow(window) {
+  if (!window.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = '这个会话在当前后端里没有内容（可能已过期，或 session_id 写错了）。';
+    $('win').replaceChildren(empty);
+    $('winPanel').hidden = false;
+    return;
+  }
+  $('win').replaceChildren(...window.map((t) => {
+    const row = document.createElement('div');
+    row.className = 'turn ' + (t.role === 'student' ? 'student' : 'assistant');
+
+    const who = document.createElement('div');
+    who.className = 'who ' + (t.role === 'student' ? 'student' : 'assistant');
+    who.textContent = t.role === 'student' ? '学生' : (t.role === 'assistant' ? '助手' : t.role);
+
+    const body = document.createElement('div');
+    body.className = 'body';
+    const text = document.createElement('div');
+    text.className = 'text';
+    text.textContent = t.content;          // 只用 textContent，学生输入不进 HTML
+    const trace = document.createElement('div');
+    trace.className = 'trace';
+    trace.textContent = `${fmtTime(t.ts)}${t.trace_id ? ' · ' + t.trace_id : ''}`;
+    body.append(text, trace);
+
+    row.append(who, body);
+    return row;
+  }));
+  $('winPanel').hidden = false;
+}
+
+async function inspect() {
+  const sid = sidInput.value.trim();
+  if (!sid) { showError('先填一个 session_id。'); return; }
+  clearMsg();
+  goBtn.disabled = true;
+  try {
+    const resp = await fetch(`/api/debug/memory/${encodeURIComponent(sid)}`);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      showError(resp.status === 404
+        ? '接口不存在：DEBUG_API_ENABLED 未开启，或该会话不存在。'
+        : `请求失败（${resp.status}）：${data.detail || '未知错误'}`);
+      $('metaPanel').hidden = true;
+      $('winPanel').hidden = true;
+      return;
+    }
+    $('backend').textContent = '后端：' + data.backend;
+    renderMeta(data);
+    renderWindow(data.window || []);
+    history.replaceState(null, '', `?session_id=${encodeURIComponent(sid)}`);
+  } catch (e) {
+    showError('请求出错：' + e.message);
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+
+async function loadSessions() {
+  try {
+    const resp = await fetch('/api/debug/memory/sessions');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data.supported || !data.sessions.length) {
+      $('chips').replaceChildren();
+      const none = document.createElement('span');
+      none.className = 'hint';
+      none.textContent = '当前没有已缓存的会话，先去聊几句再回来。';
+      $('chips').append(none);
+      return;
+    }
+    $('chips').replaceChildren(...data.sessions.map((row) => {
+      const sid = row.session_id;
+      const btn = document.createElement('button');
+      btn.className = 'chip';
+      btn.type = 'button';
+      // 短期记忆按学生存，同一个学生可能有多个会话
+      btn.textContent = sid ? `${row.student_id || '?'} / ${sid}` : `${row.student_id || '?'} / 未标记会话`;
+      btn.title = `${row.messages} 条消息 · ${row.turns} 轮`;
+      if (!sid) { btn.disabled = true; }
+      btn.addEventListener('click', () => { sidInput.value = sid; inspect(); });
+      return btn;
+    }));
+  } catch (e) { /* 列表失败不影响手动查询 */ }
+}
+
+goBtn.addEventListener('click', inspect);
+sidInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') inspect(); });
+
+const preset = new URLSearchParams(location.search).get('session_id');
+if (preset) { sidInput.value = preset; inspect(); }
+loadSessions();
+</script>
+</body>
+</html>

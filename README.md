@@ -71,6 +71,34 @@ python3 -m venv .venv
 cp .env.example .env      # 不改也能跑，默认走离线规则模型
 ```
 
+### 2.1 依赖服务（可选）
+
+不启动也能跑：短期记忆落到进程内、向量落到内存。要拿到"重启不丢上下文"和向量持久化，
+用 Docker 把两个依赖一起拉起：
+
+```bash
+docker compose up -d        # pgvector:5433 + redis:6379
+```
+
+```dotenv
+# .env
+MEMORY_BACKEND=redis
+REDIS_URL=redis://127.0.0.1:6379/0
+VECTOR_BACKEND=pgvector
+```
+
+启动后 `GET /api/meta` 的 `runtime.storage.short_term.backend` 应为 `redis`；
+真实写入的键形如：
+
+```
+psych:student:<学号>:session:<会话>   List  该会话最近若干轮（上限 24 条 / 12 轮）
+psych:student:<学号>:sessions         ZSet  该学生的会话索引（score = 最后活动时间）
+psych:owner:<会话>                    Str   会话归属，供 /api/session/{id}/history 反查
+```
+
+短期记忆**按学生聚合**：`get_recent` 不给会话时把该生所有会话合并成时间线取最近 12 轮，
+所以学生点「新对话」换个 `session_id` 也不会失忆；恢复历史时才按会话过滤。
+
 ### 3. 启动
 
 ```bash
@@ -113,7 +141,7 @@ curl http://127.0.0.1:8000/api/meta
 **① 起 Postgres + pgvector**（需已安装 Docker）：
 
 ```bash
-docker compose up -d   # 暴露在 localhost:5433
+docker compose up -d   # pgvector:5433 + redis:6379
 ```
 
 **② 装语义向量依赖**：
@@ -260,7 +288,7 @@ app/
 ├── memory/
 │   ├── store.py         存储接口协议
 │   ├── memory_impl.py   进程内实现（12 轮窗口 + 情绪轨迹 + 侧写）
-│   ├── redis_impl.py    Redis 短期记忆（RPUSH/LTRIM/LRANGE，窗口按轮算）
+│   ├── redis_impl.py    Redis 短期记忆（按学生聚合，多会话合并成时间线）
 │   ├── sql_impl.py      SQL 长期存储（Postgres / SQLite，四张表）
 │   ├── factory.py       后端装配与降级
 │   └── profile.py       侧写聚合（EMA、证据门槛、优势/年级抽取）
@@ -302,6 +330,7 @@ tests/                   单元测试
 | `SQL_DSN` | `sqlite+aiosqlite:///./data/psych_companion.db` | 生产改成 `postgresql+psycopg://…` |
 | `POSTGRES_DSN` | 空 | 填了就优先用它（覆盖 `SQL_DSN`） |
 | `STORAGE_FALLBACK` | `true` | 后端连不上时是否降级到进程内 |
+| `DEBUG_API_ENABLED` | `false` | 是否开启 `/api/debug/*` 与 `/debug/memory`（**无鉴权，仅本机开发**） |
 | `EMBEDDING_BACKEND` | `hashing` | `hashing`（本地哈希，离线默认）/ `bge`（真实语义模型） |
 | `EMBEDDING_MODEL` | `BAAI/bge-m3` | 语义向量模型（`EMBEDDING_BACKEND=bge` 时生效） |
 | `VECTOR_BACKEND` | `memory` | `memory`（进程内）/ `pgvector`（Postgres + pgvector 持久化） |
@@ -309,7 +338,7 @@ tests/                   单元测试
 | `EMBEDDING_DIM` | `1024` | 向量维度（bge-m3 = 1024） |
 | `MODEL_FALLBACK_TO_MOCK` | `true` | 模型不可用时是否降级到本地规则引擎 |
 | `MODEL_CIRCUIT_BREAKER` | `true` | 真实模型失败后是否熔断（不再每轮重试） |
-| `SHORT_TERM_TURNS` | `12` | 短期记忆窗口（最近 12 轮） |
+| `SHORT_TERM_TURNS` | `12` | 短期记忆窗口（该生跨会话最近 12 轮） |
 | `INTENSITY_EMA_ALPHA` | `0.3` | 情绪强度指数平滑：`0.7*旧值 + 0.3*本轮` |
 | `PROFILE_EVIDENCE_THRESHOLD` | `3` | 认知偏差进入稳定项的证据次数 |
 | `RECALL_TOP_K` | `20` | 向量 / BM25 各召回 20 |
@@ -422,10 +451,73 @@ Prompt 后捞得回来（100%）**，12 条原话口径下整体 +33.3 个百分
 | --- | --- | --- |
 | GET | `/health` | 存活探针 + 当前生效的模型后端 |
 | GET | `/api/meta` | 全部关键参数 + **运行时状态**（模型降级原因、存储后端） |
+| POST | `/api/auth/login` | 登录（首次登录按配置自动建号），返回令牌 |
+| POST | `/api/auth/logout` | 退出登录（吊销当前令牌） |
+| GET | `/api/auth/me` | 当前登录者 |
 | POST | `/api/chat` | SSE 流式对话 |
 | POST | `/api/chat/sync` | 同步对话（脚本 / 联调） |
+| GET | `/api/session/{session_id}/history` | 取回会话最近原话（刷新页面恢复对话用） |
 | GET | `/api/trace/{trace_id}` | 查这一轮的工具调用顺序 |
+| GET | `/api/debug/memory/sessions` | 列出短期记忆里已缓存的 (学生, 会话)（需 `DEBUG_API_ENABLED=true`） |
+| GET | `/api/debug/memory/{session_id}` | 查某会话的窗口：后端、存储键、条数、TTL、原话列表 |
+| GET | `/debug/memory` | 上面两个接口的可视化页面（浏览器直接打开） |
 | GET | `/docs` | OpenAPI 交互文档 |
+
+#### 登录与学生身份
+
+学生的 `student_id` **必须跨会话稳定**：长期画像按它存、短期上下文按 `session_id` 存。
+早先前端每次刷新都随机生成 UUID，导致同一个人每次都是"新同学"，
+表现就是"它不记得我了"——现在身份由登录给出，浏览器只保存令牌。
+
+```bash
+# 首次登录自动建号（AUTH_AUTO_REGISTER=true）
+curl -X POST http://127.0.0.1:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"student_id":"20260312","password":"hunter2x","name":"小宇"}'
+# → {"token":"...","student_id":"20260312","name":"小宇","expires_at":...,"created":true}
+
+# 带令牌对话：student_id 以令牌为准，请求体里写的会被忽略（防冒用）
+curl -X POST http://127.0.0.1:8000/api/chat/sync \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"s1","student_id":"20260312","text":"今天有点累"}'
+```
+
+| 配置项 | 默认 | 说明 |
+| --- | --- | --- |
+| `AUTH_TOKEN_TTL_DAYS` | `30` | 令牌有效期（天） |
+| `AUTH_AUTO_REGISTER` | `true` | 首次登录自动建号；正式环境应由校方导入名单后改 `false` |
+
+实现口径：密码用 PBKDF2-SHA256（20 万次迭代 + 每人独立盐）存摘要，
+令牌只存 SHA-256 指纹，退出登录立即吊销。账号表 `student_account`，
+字段 `student_id / name / salt / password_hash / created_at / last_login_at / extra`，
+其中 `extra` 是 JSON 扩展位——后续加年级、班级、班主任等字段不必重建表；
+要单独成列时在 `SqlAuthStore.ADDED_COLUMNS` 里补一条，启动会自动幂等补列。
+
+**会话归属**：短期记忆按 `<学生, 会话>` 存，每条消息自带 `session_id`，
+`psych:owner:<会话>` 记归属。`/api/session/{id}/history` 带令牌时会校验归属，
+访问别人的会话返回 403；不带令牌时按登记过的学生反查后返回——这条路径留给脚本与
+联调，**生产部署应要求登录**（在网关层拦住无令牌请求，或按需给接口加开关）。
+
+**调试接口默认关闭**（`DEBUG_API_ENABLED=false`），关闭时统一返回 404，不暴露接口存在。
+它能读到学生原话且没有鉴权，只应在本机开发时临时打开：
+
+```bash
+DEBUG_API_ENABLED=true
+```
+
+打开后浏览器访问 `http://127.0.0.1:8000/debug/memory`，页面会列出当前后端里已有的会话，
+点一下即可看窗口内容；也能直接带参进：`/debug/memory?session_id=<会话 ID>`。
+命令行等价：
+
+```bash
+curl http://127.0.0.1:8000/api/debug/memory/sessions
+curl http://127.0.0.1:8000/api/debug/memory/<session_id>
+```
+
+这个接口能回答"上下文到底有没有进窗口"：`messages` 是后端里实际存了几条，
+`turns` 是其中学生轮数，`ttl_seconds` 是 Redis 剩余过期时间（进程内后端为 `null`），
+`window` 是 `get_recent()` 真正取回的那几条——三者对不上，就说明窗口裁剪或过期有问题。
 
 ### 7.3 生产部署
 
@@ -459,8 +551,42 @@ PARENT_NOTIFY_CHANNEL=outbox          # 家长侧待接入真实通道
 | 模型没生效，一直在用本地规则引擎 | `GET /api/meta` → `runtime.model[].fallback_reason` |
 | 存储连不上，已降级 | `GET /api/meta` → `runtime.storage.*.detail` |
 | 想知道这轮调了哪些工具 | `GET /api/trace/{trace_id}`，或查 `tool_call_log` 表 |
+| **某轮回复慢，想定位在哪一步** | `scripts/show_latency.py`（见下） |
+| 向量模型预热好了没 | `GET /api/meta` → `runtime.vector.warmup`（`warming` / `ready (23.1s)` / `skipped`） |
 | 高危上报有没有送达 | `data/outbox/escalations.jsonl`（未配 webhook 时） |
 | 检索召回不对 | 跑 `scripts/eval_retrieval.py` 看阈值敏感度表 |
+
+**排查"慢在哪"** 用耗时瀑布，数据来自编排器逐步计时（`tool_call_log.duration_ms`）：
+
+```bash
+./.venv/Scripts/python.exe scripts/show_latency.py        # 最近 5 轮
+./.venv/Scripts/python.exe scripts/show_latency.py -n 20  # 最近 20 轮
+./.venv/Scripts/python.exe scripts/show_latency.py --trace trace_xxx
+```
+
+输出形如：
+
+```
+  risk_scorer                  7808 ms   40.0%  ████████████  (与对方并行)
+  positive_guidance            6040 ms   30.9%  ██████████
+  need_clarification           5122 ms   26.2%  ████████
+  strategy_retrieval            337 ms    1.7%  █
+  → 最慢一步：risk_scorer（7.81s）
+```
+
+三点判读口径：
+
+* `emotion_recognition` 与 `risk_scorer` **并行**执行，两者相加会高估总耗时；
+  脚本已按"组内取最大"折算，但仍会分别列出各自耗时。
+* 检索两步（`*_retrieval`）的 `detail` 里有分阶段耗时，能进一步区分
+  **向量编码（embed）/ 召回（recall）/ 重排（rerank）**。
+* 若最慢的一步是四个 Worker 中的某一个，说明瓶颈在**模型服务端延迟**，
+  不在本地代码——先看是不是触发了降级，再考虑换更快的模型。
+
+**启动时的向量预热**：`embedding_backend=bge` 时，服务启动后会**在后台线程**加载
+bge-m3（约 20–30 秒），期间服务已经可用（`/health` 正常）。这一步不能省——
+不预热的话，这份加载成本会落到"重启后的第一条真实对话"上（实测首轮 39 秒、
+第二轮 1.6 秒）。预热状态见 `/api/meta` 的 `runtime.vector.warmup`。
 
 ### 7.5 常用维护命令
 
@@ -473,6 +599,9 @@ PARENT_NOTIFY_CHANNEL=outbox          # 家长侧待接入真实通道
 
 # 模型连通性自检
 ./.venv/Scripts/python.exe scripts/probe_model.py
+
+# 某轮耗时瀑布（定位慢在哪一步）
+./.venv/Scripts/python.exe scripts/show_latency.py
 
 # 全量测试
 ./.venv/Scripts/python.exe -m pytest -q

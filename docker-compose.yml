@@ -1,6 +1,7 @@
-# Postgres + pgvector（用于语义向量持久化）
+# 依赖服务：Postgres + pgvector（语义向量持久化）、Redis（短期记忆热缓存）
 # 用法：docker compose up -d
 # 连接串：postgresql+psycopg://psych:psych@localhost:5433/psych
+#         redis://localhost:6379/0
 services:
   pgvector:
     image: pgvector/pgvector:pg16
@@ -19,5 +20,22 @@ services:
       timeout: 3s
       retries: 10
 
+  # Redis（短期记忆热缓存：最近 12 轮对话，7 天过期）
+  # 连接串：redis://localhost:6379/0
+  redis:
+    image: redis:7-alpine
+    container_name: psych-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   pgvector_data:
+  redis_data:

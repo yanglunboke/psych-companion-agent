@@ -23,9 +23,9 @@ from app.schemas import EmotionResult, InterventionFit, NeedResult, StudentProfi
 async def test_short_term_memory_keeps_12_rounds() -> None:
     mem = InMemoryShortTermMemory(max_turns=12)
     for i in range(20):
-        await mem.append("s", Turn(role="student", content=f"学生第{i}轮"))
-        await mem.append("s", Turn(role="assistant", content=f"助手第{i}轮"))
-    recent = await mem.get_recent("s", 12)
+        await mem.append("u1", Turn(role="student", content=f"学生第{i}轮", session_id="s"))
+        await mem.append("u1", Turn(role="assistant", content=f"助手第{i}轮", session_id="s"))
+    recent = await mem.get_recent("u1", 12, session_id="s")
     student_turns = [t for t in recent if t.role == "student"]
     assert len(student_turns) == 12
     assert student_turns[0].content == "学生第8轮"
@@ -35,9 +35,38 @@ async def test_short_term_memory_keeps_12_rounds() -> None:
 @pytest.mark.asyncio
 async def test_short_term_memory_clear() -> None:
     mem = InMemoryShortTermMemory()
-    await mem.append("s", Turn(role="student", content="你好"))
-    await mem.clear("s")
-    assert await mem.get_recent("s") == []
+    await mem.append("u1", Turn(role="student", content="你好", session_id="s"))
+    await mem.clear("u1", session_id="s")
+    assert await mem.get_recent("u1", session_id="s") == []
+
+
+@pytest.mark.asyncio
+async def test_short_term_memory_crosses_sessions_for_same_student() -> None:
+    """同一个学生换了会话，短期记忆不该断 —— 这是"它不记得我了"的根因之一。"""
+    mem = InMemoryShortTermMemory()
+    await mem.append("u1", Turn(role="student", content="在 A 会话说的事", ts=1.0, session_id="A"))
+    await mem.append("u1", Turn(role="assistant", content="A 的回复", ts=1.0, session_id="A"))
+    await mem.append("u1", Turn(role="student", content="在 B 会话说的事", ts=2.0, session_id="B"))
+
+    # 不给会话：合并成一条时间线，A 的内容还在
+    contents = [t.content for t in await mem.get_recent("u1", 12)]
+    assert contents == ["在 A 会话说的事", "A 的回复", "在 B 会话说的事"]
+
+    # 给了会话：只返回那个会话的原话
+    assert [t.content for t in await mem.get_recent("u1", 12, session_id="A")] == [
+        "在 A 会话说的事",
+        "A 的回复",
+    ]
+    assert await mem.owner_of("B") == "u1"
+
+
+@pytest.mark.asyncio
+async def test_short_term_memory_isolates_students() -> None:
+    mem = InMemoryShortTermMemory()
+    await mem.append("u1", Turn(role="student", content="甲的心里话", session_id="s1"))
+    await mem.append("u2", Turn(role="student", content="乙的心里话", session_id="s2"))
+    assert [t.content for t in await mem.get_recent("u1")] == ["甲的心里话"]
+    assert [t.content for t in await mem.get_recent("u2")] == ["乙的心里话"]
 
 
 def test_intensity_uses_ema() -> None:

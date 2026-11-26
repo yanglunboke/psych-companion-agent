@@ -9,9 +9,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Any
 
+from app.auth.factory import build_auth_store
+from app.auth.store import InMemoryAuthStore
 from app.config import Settings, get_settings
 from app.memory.factory import build_profile_store, build_short_term_memory
 from app.memory.memory_impl import InMemoryProfileStore, InMemoryShortTermMemory
@@ -72,6 +76,8 @@ class Container:
             "store": "memory",
             "detail": "进程内向量索引",
         }
+        #: 后台预热任务（bge 等真实向量模型才需要）
+        self._warmup_task: asyncio.Task | None = None
         self.retriever = Retriever(
             self.card_index,
             RetrieverConfig(
@@ -96,9 +102,12 @@ class Container:
         # ---- 记忆（默认进程内；setup_storage 会按配置升级）----
         self.short_memory: Any = InMemoryShortTermMemory(max_turns=s.short_term_turns)
         self.profile_store: Any = InMemoryProfileStore()
+        # ---- 账号（登录给出稳定 student_id）----
+        self.auth: Any = InMemoryAuthStore()
         self.storage_status: dict[str, Any] = {
             "short_term": {"backend": "memory", "detail": "进程内实现"},
             "profile": {"backend": "memory", "detail": "进程内实现"},
+            "auth": {"backend": "memory", "detail": "进程内实现"},
         }
 
         # ---- 支撑 ----
@@ -148,6 +157,9 @@ class Container:
 
         self.profile_store, profile_status = await build_profile_store(self.settings)
         self.storage_status["profile"] = profile_status
+
+        self.auth, auth_status = await build_auth_store(self.settings)
+        self.storage_status["auth"] = auth_status
 
         # 编排器换成新的存储实现
         self.orchestrator.short_memory = self.short_memory
@@ -267,6 +279,64 @@ class Container:
             logger.info("向量索引就绪：进程内，补编 %d 条", encoded)
 
     # ------------------------------------------------------------------
+    def start_embedder_warmup(self) -> None:
+        """后台预热向量模型（不阻塞启动，也不占首个用户请求）。
+
+        为什么必须有这一步：bge-m3 的权重是**懒加载**的，而启动时 68 张卡的
+        向量已在 PGVector 里（``encoded=0``），根本不会触发加载。于是这份
+        20–30 秒的加载成本就落在"重启后的第一条真实对话"上——实测出现过
+        首轮 39 秒、第二轮 1.6 秒的落差。
+
+        预热放在后台线程里：服务立即可用（``/health`` 返回 ok），
+        正在预热的这几十秒内如果有请求进来，两者会**共用同一把加载锁**，
+        不会各加载一份模型。
+        """
+        if getattr(self, "_warmup_task", None) is not None:
+            return
+        embedder = self.embedder
+        if not getattr(embedder, "needs_warmup", False):
+            self.vector_status["warmup"] = "skipped"
+            return
+        self.vector_status["warmup"] = "warming"
+        self._warmup_task = asyncio.create_task(self._run_warmup())
+
+    async def _run_warmup(self) -> None:
+        started = time.perf_counter()
+        try:
+            elapsed = await asyncio.to_thread(self.embedder.warmup)
+            self.vector_status["warmup"] = f"ready ({elapsed:.1f}s)"
+            logger.info("向量模型预热完成：%.1f 秒（首轮检索不再承担加载成本）", elapsed)
+        except Exception as exc:  # noqa: BLE001
+            self.vector_status["warmup"] = f"failed: {exc}"
+            logger.warning("向量模型预热失败（首轮仍会按需加载）：%s", exc)
+        finally:
+            logger.debug("预热流程耗时 %.1f 秒", time.perf_counter() - started)
+
+    # ------------------------------------------------------------------
+    async def close(self) -> None:
+        """释放外部连接（Redis 客户端 / PostgreSQL 连接池）。
+
+        任一项失败只告警，不影响进程退出。
+        """
+        task = getattr(self, "_warmup_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        for name, target, method in (
+            ("短期记忆", self.short_memory, "close"),
+            ("长期存储", self.profile_store, "dispose"),
+            ("账号存储", self.auth, "close"),
+            ("向量存储", self.vector_store, "dispose"),
+        ):
+            closer = getattr(target, method, None)
+            if closer is None:
+                continue
+            try:
+                result = closer()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("释放%s连接失败：%s", name, exc)
+
     def status(self) -> dict[str, Any]:
         """运行状态（供 /health 如实暴露）。"""
         return {

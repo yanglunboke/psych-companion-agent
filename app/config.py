@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     #: 短期记忆后端：memory（进程内）/ redis（热缓存，最近 12 轮）
     memory_backend: Literal["memory", "redis"] = "memory"
     redis_url: str = "redis://127.0.0.1:6379/0"
-    redis_key_prefix: str = "psych:session"
+    redis_key_prefix: str = "psych"
     #: 长期存储后端：memory（进程内）/ sql（Postgres 生产 / SQLite 本地）
     db_backend: Literal["memory", "sql"] = "memory"
     #: SQLAlchemy 异步 DSN。生产：postgresql+psycopg://user:pw@host:5432/psych
@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     short_term_turns: int = 12
     intensity_ema_alpha: float = 0.3
     profile_evidence_threshold: int = 3
+
+    # ---------------- 账号与登录 ----------------
+    #: 登录令牌有效期（天）。到期后需重新登录。
+    auth_token_ttl_days: int = 30
+    #: 首次登录是否自动建号（学校演示环境用；正式环境应由校方导入名单后关闭）
+    auth_auto_register: bool = True
 
     # ---------------- RAG 检索 ----------------
     #: 向量化后端：hashing（本地哈希，无语义，离线默认）/ bge（真实语义模型）
@@ -114,6 +120,11 @@ class Settings(BaseSettings):
     prompt_log_enabled: bool = True
     #: Prompt 日志目录（按天滚动 data/prompts/YYYY-MM-DD.jsonl）
     prompt_log_dir: str = "data/prompts"
+
+    # ---------------- 调试接口 ----------------
+    #: 是否开启 /api/debug/* 与 /debug/memory 调试页。
+    #: 默认关闭：这些接口能读到学生原话且**没有鉴权**，只能在可信的本机开发环境打开。
+    debug_api_enabled: bool = False
 
     # ---------------- 高危上报 ----------------
     escalation_webhook_url: str = ""

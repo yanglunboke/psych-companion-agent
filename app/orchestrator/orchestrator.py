@@ -131,8 +131,9 @@ class Orchestrator:
         started = time.perf_counter()
 
         # ---------- 0. 网关：同时做三件事 ----------
+        # 短期记忆按学生取，跨会话合并 —— 学生点「新对话」只是清屏，人没变。
         recent = await self.short_memory.get_recent(
-            req.session_id, self.settings.short_term_turns
+            req.student_id, self.settings.short_term_turns
         )
         profile = await self.profile_store.get_profile(req.student_id)
         summary = to_summary(profile)
@@ -171,9 +172,18 @@ class Orchestrator:
             detail=hit.category or "",
         )
 
-        # ---------- 2. 情绪识别（每轮都跑） ----------
-        t0 = time.perf_counter()
-        emotion_core: EmotionCore = await self.emotion_worker.run(ctx)
+        # ---------- 2 & 3. 情绪识别 ∥ 风险分（两者输入相同、互不依赖） ----------
+        # 串行跑时两段延迟相加；并行后这一段只花"较慢那个"的时间。
+        # 实测两者各 2–9 秒且波动大，串行会把这部分延迟原样叠加到首字上。
+        async def _timed(coro):
+            started = time.perf_counter()
+            result = await coro
+            return result, (time.perf_counter() - started) * 1000
+
+        (emotion_core, emotion_ms), (risk, risk_ms) = await asyncio.gather(
+            _timed(self.emotion_worker.run(ctx)),
+            _timed(self.risk_scorer.score(ctx)),
+        )
         trace.record(
             "emotion_recognition",
             key_args={
@@ -183,17 +193,14 @@ class Orchestrator:
                 "distortions": emotion_core.candidate_distortions,
             },
             success=True,
-            duration_ms=(time.perf_counter() - t0) * 1000,
+            duration_ms=emotion_ms,
+            detail=f"与 risk_scorer 并行（该段墙钟 {max(emotion_ms, risk_ms):.0f} ms）",
         )
-
-        # ---------- 3. 风险分（小模型，temperature=0） ----------
-        t0 = time.perf_counter()
-        risk = await self.risk_scorer.score(ctx)
         trace.record(
             "risk_scorer",
             key_args={"risk_score": round(risk.risk_score, 3)},
             success=True,
-            duration_ms=(time.perf_counter() - t0) * 1000,
+            duration_ms=risk_ms,
             detail=risk.risk_reason,
         )
 
@@ -317,7 +324,7 @@ class Orchestrator:
         # 会挤占策略卡名额（实测出现过"痛感实验"在考试失利/焦虑场景入选）。
         t0 = time.perf_counter()
         query = build_query(outcome.emotion, needs)
-        retrieval = self.retriever.search(query, collections=["student_reply", "ban"])
+        retrieval = await self.retriever.asearch(query, collections=["student_reply", "ban"])
         outcome.retrieved = list(retrieval.selected)
         trace.record(
             "strategy_retrieval",
@@ -332,6 +339,8 @@ class Orchestrator:
                 "reranked": len(retrieval.reranked),
                 "selected": [c.card_id for c in retrieval.selected],
                 "dynamic_k": retrieval.dynamic_k,
+                # 分阶段耗时：embed 是向量编码（含冷启动加载），rerank 是本地重排
+                "timings_ms": retrieval.timings,
             },
             success=True,
             duration_ms=(time.perf_counter() - t0) * 1000,
@@ -348,7 +357,7 @@ class Orchestrator:
             scene="",
             keywords=[ctx.current_text],
         )
-        theory = self.retriever.search(
+        theory = await self.retriever.asearch(
             theory_query,
             collections=["theory"],
             max_selected=self.settings.theory_top_k,
@@ -365,6 +374,7 @@ class Orchestrator:
                 "reranked": len(theory.reranked),
                 "selected": [c.card_id for c in theory.selected],
                 "max_selected": self.settings.theory_top_k,
+                "timings_ms": theory.timings,
             },
             success=True,
             duration_ms=(time.perf_counter() - t0) * 1000,
@@ -599,13 +609,25 @@ class Orchestrator:
         """保留短期上下文；仅真实模型轮次写长期存储。"""
         now = time.time()
         await self.short_memory.append(
-            req.session_id,
-            Turn(role="student", content=req.text, ts=now, trace_id=outcome.trace_id),
+            req.student_id,
+            Turn(
+                role="student",
+                content=req.text,
+                ts=now,
+                trace_id=outcome.trace_id,
+                session_id=req.session_id,
+            ),
         )
         if outcome.reply:
             await self.short_memory.append(
-                req.session_id,
-                Turn(role="assistant", content=outcome.reply, ts=now, trace_id=outcome.trace_id),
+                req.student_id,
+                Turn(
+                    role="assistant",
+                    content=outcome.reply,
+                    ts=now,
+                    trace_id=outcome.trace_id,
+                    session_id=req.session_id,
+                ),
             )
 
         if not persist_long_term:

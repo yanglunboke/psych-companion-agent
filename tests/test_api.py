@@ -68,7 +68,7 @@ def test_mock_chat_does_not_write_sql(tmp_path, monkeypatch) -> None:
             with sqlite3.connect(db) as connection:
                 for table in ("student_utterance", "emotion_trajectory", "student_profile", "tool_call_log"):
                     assert connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] == 0
-            assert len(local_client.app.state.container.short_memory._sessions["no-sql-session"]) == 4
+            assert len(local_client.app.state.container.short_memory._students["no-sql-student"]["no-sql-session"]) == 4
     finally:
         monkeypatch.delenv("DB_BACKEND")
         monkeypatch.delenv("SQL_DSN")

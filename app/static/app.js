@@ -7,10 +7,37 @@
     conversation: $('conversation'), error: $('error-message'), newChat: $('new-chat'),
     sidebar: $('sidebar'), scrim: $('mobile-scrim'), menu: $('menu-btn'),
     status: $('model-status'), statusText: $('model-status-text'),
+    layout: $('layout'), gate: $('auth-gate'), loginForm: $('login-form'),
+    loginId: $('login-id'), loginName: $('login-name'), loginPassword: $('login-password'),
+    loginError: $('login-error'), loginSubmit: $('login-submit'),
+    sideUser: $('side-user'), sideUserName: $('side-user-name'), sideUserId: $('side-user-id'),
+    sideUserAvatar: $('side-user-avatar'), logout: $('logout-btn'),
   };
   const makeId = () => (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  let sessionId = makeId();
-  let studentId = makeId();
+  // 身份来自登录，不再每次随机生成：后端按 student_id 存长期画像、按 session_id
+  // 存短期上下文，ID 一变全都找不到 —— 表现就是"它不记得我了"。
+  const KEY_TOKEN = 'psy.token';
+  const KEY_STUDENT = 'psy.studentId';
+  const KEY_NAME = 'psy.name';
+  const KEY_SESSION = 'psy.sessionId';
+  const readStored = (key) => {
+    try { return localStorage.getItem(key) || ''; } catch { return ''; }
+  };
+  const writeStored = (key, value) => {
+    try { localStorage.setItem(key, value); } catch { /* 隐私模式下降级为单次会话 */ }
+  };
+  const dropStored = (key) => {
+    try { localStorage.removeItem(key); } catch { /* 忽略 */ }
+  };
+  const newId = (key) => {
+    const value = makeId();
+    writeStored(key, value);
+    return value;
+  };
+  let token = readStored(KEY_TOKEN);
+  let studentId = readStored(KEY_STUDENT);
+  let displayName = readStored(KEY_NAME);
+  let sessionId = readStored(KEY_SESSION) || newId(KEY_SESSION);
   let busy = false;
 
   function setBusy(value) {
@@ -148,7 +175,7 @@
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ session_id: sessionId, student_id: studentId, text, speaker: 'student' }),
       });
       if (!response.ok) throw new Error(response.status === 422 ? '输入内容不符合要求。' : `服务请求失败（${response.status}）。`);
@@ -210,6 +237,157 @@
     ui.menu.setAttribute('aria-expanded', 'false');
   }
 
+  // 刷新页面后把这一会话的历史贴回来 —— 后端仍然记得，界面也要对得上。
+  // 短期记忆按学生存，所以这里带上令牌：后端据此确认"这个会话是你的"，
+  // 共享电脑上换了账号不会看到上一个人的原话。
+  async function restoreHistory() {
+    try {
+      const response = await fetch(`/api/session/${encodeURIComponent(sessionId)}/history`, {
+        cache: 'no-store',
+        headers: authHeaders(),
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      for (const item of data.messages || []) {
+        const text = String(item.content || '');
+        if (!text) continue;
+        message(item.role === 'student' ? 'user' : 'assistant', text);
+      }
+    } catch {
+      /* 恢复失败不影响新对话 */
+    }
+  }
+
+  // ---------------- 登录 ----------------
+  function authHeaders(extra) {
+    const headers = Object.assign({}, extra);
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
+  }
+
+  function gateError(text) {
+    if (!text) {
+      ui.loginError.hidden = true;
+      ui.loginError.textContent = '';
+      return;
+    }
+    ui.loginError.textContent = text;
+    ui.loginError.hidden = false;
+  }
+
+  function showGate(message) {
+    ui.gate.hidden = false;
+    ui.layout.hidden = true;
+    gateError(message || '');
+    ui.loginId.focus();
+  }
+
+  function renderUser() {
+    const label = displayName || '同学';
+    ui.sideUser.hidden = false;
+    ui.sideUserName.textContent = label;
+    ui.sideUserId.textContent = studentId;
+    ui.sideUserAvatar.textContent = label.slice(0, 1);
+  }
+
+  // 换人（机房共用电脑）时必须换会话：短期记忆按 session 存，
+  // 沿用上一个人的 session 会把别人的原话贴到这人屏幕上。
+  function switchIfIdentityChanged(nextId) {
+    if (studentId && studentId !== nextId) {
+      sessionId = newId(KEY_SESSION);
+      ui.messages.replaceChildren();
+      ui.welcome.hidden = false;
+    }
+  }
+
+  async function enterApp() {
+    ui.gate.hidden = true;
+    ui.layout.hidden = false;
+    renderUser();
+    await restoreHistory();
+    refreshStatus();
+  }
+
+  async function login(event) {
+    event.preventDefault();
+    const id = ui.loginId.value.trim();
+    const password = ui.loginPassword.value;
+    if (id.length < 3) { gateError('学号至少 3 位。'); return; }
+    if (password.length < 6) { gateError('密码至少 6 位。'); return; }
+    gateError('');
+    ui.loginSubmit.disabled = true;
+    ui.loginSubmit.textContent = '正在登录…';
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ student_id: id, password, name: ui.loginName.value.trim() }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = Array.isArray(data.detail) ? '学号或密码格式不正确。' : data.detail;
+        throw new Error(detail || '登录失败，请重试。');
+      }
+      token = data.token;
+      switchIfIdentityChanged(data.student_id);
+      studentId = data.student_id;
+      displayName = data.name || '';
+      writeStored(KEY_TOKEN, token);
+      writeStored(KEY_STUDENT, studentId);
+      writeStored(KEY_NAME, displayName);
+      ui.loginPassword.value = '';
+      await enterApp();
+    } catch (error) {
+      gateError(error.message || '登录失败，请重试。');
+    } finally {
+      ui.loginSubmit.disabled = false;
+      ui.loginSubmit.textContent = '登录';
+    }
+  }
+
+  async function logout() {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', headers: authHeaders() });
+    } catch {
+      /* 服务不可达也要允许本地退出 */
+    }
+    token = '';
+    studentId = '';
+    displayName = '';
+    dropStored(KEY_TOKEN);
+    dropStored(KEY_STUDENT);
+    dropStored(KEY_NAME);
+    dropStored(KEY_SESSION);
+    sessionId = newId(KEY_SESSION);
+    ui.messages.replaceChildren();
+    ui.welcome.hidden = false;
+    ui.sideUser.hidden = true;
+    showGate('');
+  }
+
+  // 启动：有令牌先验一次，失效就回登录页；不再"先给人用、背后没身份"。
+  async function boot() {
+    if (!token) {
+      showGate('');
+      return;
+    }
+    try {
+      const response = await fetch('/api/auth/me', { headers: authHeaders(), cache: 'no-store' });
+      if (!response.ok) throw new Error('stale');
+      const me = await response.json();
+      switchIfIdentityChanged(me.student_id || studentId);
+      studentId = me.student_id || studentId;
+      displayName = me.name || displayName;
+      writeStored(KEY_STUDENT, studentId);
+      writeStored(KEY_NAME, displayName);
+      await enterApp();
+    } catch {
+      token = '';
+      dropStored(KEY_TOKEN);
+      showGate('登录状态已失效，请重新登录。');
+    }
+  }
+
   ui.input.addEventListener('input', () => {
     ui.input.style.height = 'auto';
     ui.input.style.height = `${Math.min(ui.input.scrollHeight, 152)}px`;
@@ -224,8 +402,8 @@
   ui.send.addEventListener('click', sendMessage);
   ui.newChat.addEventListener('click', () => {
     if (busy) return;
-    sessionId = makeId();
-    studentId = makeId();
+    // 只换会话，不换人：换掉 studentId 会让长期画像从零开始
+    sessionId = newId(KEY_SESSION);
     ui.messages.replaceChildren();
     ui.welcome.hidden = false;
     showError('');
@@ -245,5 +423,7 @@
     ui.menu.setAttribute('aria-expanded', String(opened));
   });
   ui.scrim.addEventListener('click', closeMenu);
-  refreshStatus();
+  ui.loginForm.addEventListener('submit', login);
+  ui.logout.addEventListener('click', logout);
+  boot();
 })();

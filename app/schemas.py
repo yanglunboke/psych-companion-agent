@@ -210,6 +210,9 @@ class RetrievalResult(BaseModel):
     selected: list[RetrievedCard] = Field(default_factory=list)
     dynamic_k: int = 0
     token_budget_used: int = 0
+    #: 各阶段耗时（毫秒），用于回答"慢在哪一步"。
+    #: 形如 ``{"embed": 420.1, "recall": 3.2, "rerank": 12.4, "total": 436.0}``
+    timings: dict[str, float] = Field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------
@@ -241,12 +244,18 @@ class RiskVerdict(BaseModel):
 # 记忆
 # --------------------------------------------------------------------------
 class Turn(BaseModel):
-    """一轮对话。"""
+    """一轮对话。
+
+    ``session_id`` 记的是**这句话出自哪个会话**。短期记忆按学生存，
+    一个学生可能同时有多个会话，只靠 ``ts`` 排序无法回答"给我这个会话的原话"，
+    所以每条消息自带归属。旧数据没有这个字段，读出来是 ``None``。
+    """
 
     role: str = Field(description="student / assistant / teacher")
     content: str
     ts: float = 0.0
     trace_id: str | None = None
+    session_id: str | None = None
 
 
 class EmotionTrajectoryItem(BaseModel):
