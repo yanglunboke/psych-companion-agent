@@ -27,6 +27,7 @@ from app.config import Settings
 from app.memory.profile import to_summary, update_profile
 from app.models.mock_model import RuleUsage, rule_usage
 from app.models.sanitize import strip_think
+from app.observability.context import set_trace_id
 from app.observability.reflection import ReflectionService
 from app.observability.trace import Trace, TraceStore
 from app.orchestrator.escalate import EscalationService
@@ -125,6 +126,8 @@ class Orchestrator:
         """处理一轮对话，按事件流式返回。"""
         trace = Trace()
         self.trace_store.save(trace)
+        # 把 trace_id 放进请求上下文，供模型层落 Prompt 日志时关联。
+        set_trace_id(trace.trace_id)
         started = time.perf_counter()
 
         # ---------- 0. 网关：同时做三件事 ----------

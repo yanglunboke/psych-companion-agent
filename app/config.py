@@ -109,6 +109,12 @@ class Settings(BaseSettings):
     #: 分数量纲不同，共用阈值会误杀大部分理论卡）
     theory_rerank_min_score: float = 0.35
 
+    # ---------------- Prompt 日志 ----------------
+    #: 是否把每次 AI 调用的 system prompt / user message 落盘
+    prompt_log_enabled: bool = True
+    #: Prompt 日志目录（按天滚动 data/prompts/YYYY-MM-DD.jsonl）
+    prompt_log_dir: str = "data/prompts"
+
     # ---------------- 高危上报 ----------------
     escalation_webhook_url: str = ""
     escalation_outbox_path: str = "data/outbox/escalations.jsonl"
@@ -135,6 +141,11 @@ class Settings(BaseSettings):
     @property
     def outbox_file(self) -> Path:
         path = Path(self.escalation_outbox_path)
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    @property
+    def prompt_log_directory(self) -> Path:
+        path = Path(self.prompt_log_dir)
         return path if path.is_absolute() else PROJECT_ROOT / path
 
     @field_validator("dynamic_k_by_fit", mode="before")

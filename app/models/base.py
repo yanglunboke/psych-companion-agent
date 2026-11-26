@@ -24,6 +24,12 @@ from agentscope.model import ChatModelBase, ChatResponse
 from app.config import Settings
 from app.models.mock_model import RuleBasedChatModel
 from app.models.openai_model import build_openai_model
+from app.observability.context import get_trace_id
+from app.observability.prompt_logger import (
+    PromptLogger,
+    extract_system_prompt,
+    extract_user_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +51,7 @@ class ResilientChatModel(ChatModelBase):
         purpose: str = "main",
         model_name: str = "",
         circuit_breaker: bool = True,
+        prompt_logger: PromptLogger | None = None,
     ) -> None:
         super().__init__(
             credential=primary.credential,
@@ -64,6 +71,7 @@ class ResilientChatModel(ChatModelBase):
         #: 每轮再白跑一次注定失败的请求纯属浪费首字延迟）
         self._circuit_breaker = circuit_breaker
         self._breaker_open = False
+        self._prompt_logger = prompt_logger
 
     # ------------------------------------------------------------------
     @property
@@ -97,6 +105,21 @@ class ResilientChatModel(ChatModelBase):
             self.fallback_reason,
         )
 
+    def _log_prompt(self, messages: list, *, backend: str) -> None:
+        """把本轮发给模型的提示词落盘（观测用途，失败不影响主流程）。"""
+        if self._prompt_logger is None or not self._prompt_logger.enabled:
+            return
+        try:
+            self._prompt_logger.record(
+                trace_id=get_trace_id() or "",
+                model=self.model_name,
+                backend=backend,
+                system_prompt=extract_system_prompt(messages),
+                user_message=extract_user_message(messages),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Prompt 日志埋点失败：%s", exc)
+
     # ------------------------------------------------------------------
     async def _call_api(
         self,
@@ -112,6 +135,7 @@ class ResilientChatModel(ChatModelBase):
                 model_name, messages, tools=tools, tool_choice=tool_choice, **kwargs
             )
         self._last_messages = messages
+        self._log_prompt(messages, backend="openai")
         try:
             result = await self.primary._call_api(
                 model_name, messages, tools=tools, tool_choice=tool_choice, **kwargs
@@ -151,6 +175,11 @@ class ModelFactory:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._instances: dict[Purpose, ChatModelBase] = {}
+        #: Prompt 日志器：把每次 AI 调用的提示词落盘（供事后排查）。
+        self.prompt_logger = PromptLogger(
+            settings.prompt_log_directory,
+            enabled=settings.prompt_log_enabled,
+        )
 
     # ------------------------------------------------------------------
     def create(self, purpose: Purpose = "main") -> ChatModelBase:
@@ -211,6 +240,7 @@ class ModelFactory:
             purpose=purpose,
             model_name=name,
             circuit_breaker=settings.model_circuit_breaker,
+            prompt_logger=self.prompt_logger,
         )
 
     # ------------------------------------------------------------------
